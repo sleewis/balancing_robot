@@ -42,11 +42,15 @@ PID tiltPID(
 // ─── Gedeelde toestand & mutex ────────────────────────────────────────────────
 SemaphoreHandle_t xSharedMutex;
 SharedState gShared = {
-  .targetTilt   = 0.0f,
-  .currentTilt  = 0.0f,
+  .targetTilt    = 0.0f,
+  .currentTilt   = 0.0f,
   .currentAngle1 = 0.0f,
   .currentAngle2 = 0.0f,
-  .pidOutput    = 0.0f,
+  .pidOutput     = 0.0f,
+  .avgCurrent1   = 0.0f,
+  .avgCurrent2   = 0.0f,
+  .motor1Ok      = false,
+  .motor2Ok      = false,
 };
 
 
@@ -93,7 +97,9 @@ void fastTask(void *pvParameters) {
     float error  = tilt - targetTilt;
     float voltage = tiltPID.update(error, DT);
 
-    // ── 4) Veiligheidscheck ───────────────────────────────────────────────────
+    // ── 4) Veiligheidscheck tilt ─────────────────────────────────────────────
+    // Schakel motoren uit als de robot te ver kantelt of de IMU niet gereed is.
+    // Motor.loop() handelt encoder- en overstroom-fouten zelf af.
     bool safe = (fabsf(tilt) < TILT_LIMIT_DEG) && imu.isReady();
     if (!safe) {
       voltage = 0.0f;
@@ -101,8 +107,8 @@ void fastTask(void *pvParameters) {
     }
 
     // ── 5) Motoraansturing ────────────────────────────────────────────────────
-    // Motor 2 is gespiegeld gemonteerd → omgekeerd teken
-    // Pas het teken van motor2 aan als de robot de verkeerde kant op rijdt
+    // Motor 2 is gespiegeld gemonteerd → omgekeerd teken.
+    // Motor.loop() stopt automatisch bij encoder-fout of overstroom.
     motor1.loop( voltage);
     motor2.loop(-voltage);
 
@@ -112,6 +118,10 @@ void fastTask(void *pvParameters) {
       gShared.currentAngle1 = motor1.getAngle();
       gShared.currentAngle2 = motor2.getAngle();
       gShared.pidOutput     = voltage;
+      gShared.avgCurrent1   = motor1.getAvgCurrent();
+      gShared.avgCurrent2   = motor2.getAvgCurrent();
+      gShared.motor1Ok      = motor1.isOk();
+      gShared.motor2Ok      = motor2.isOk();
       xSemaphoreGive(xSharedMutex);
     }
 
@@ -132,15 +142,23 @@ void fastTask(void *pvParameters) {
 void slowTask(void *pvParameters) {
   while (true) {
     // ── Lees telemetrie van fast core ─────────────────────────────────────────
-    float tilt, pidOut;
+    float tilt, pidOut, cur1, cur2;
+    bool  ok1, ok2;
     if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
       tilt   = gShared.currentTilt;
       pidOut = gShared.pidOutput;
+      cur1   = gShared.avgCurrent1;
+      cur2   = gShared.avgCurrent2;
+      ok1    = gShared.motor1Ok;
+      ok2    = gShared.motor2Ok;
       xSemaphoreGive(xSharedMutex);
     }
 
     // ── Seriële debug-output ──────────────────────────────────────────────────
-    Serial.printf("[slow] tilt=%.2f°  pid=%.3fV\n", tilt, pidOut);
+    Serial.printf("[slow] tilt=%6.2f°  pid=%6.3fV  I1=%5.2fA  I2=%5.2fA  M1=%s  M2=%s\n",
+                  tilt, pidOut, cur1, cur2,
+                  ok1 ? "OK" : "FOUT",
+                  ok2 ? "OK" : "FOUT");
 
     // ── Seriële live-tuning van PID-gains ────────────────────────────────────
     // Stuur via serieel monitor: "p1.5"  "i0.1"  "d0.05"
