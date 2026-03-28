@@ -50,7 +50,7 @@ Communication between tasks uses a mutex protected shared structure.
 
 ## Controller
 
-ESP32
+MKS-ESP32FOC V2.0 (ESP32-gebaseerd motorstuurboard)
 
 ## Sensors
 
@@ -60,7 +60,8 @@ BNO055
 
 Used for tilt measurement using Euler pitch.
 
-Connected to I2C bus 1.
+Verbonden op I2C bus 0 (GPIO 19/18), gedeeld met de encoder van motor 1.
+Adres BNO055: 0x28 — geen conflict met AS5600 (0x36).
 
 ### Motor Encoders
 
@@ -140,8 +141,8 @@ PID gains can be tuned live via serial:
 
 ```
 p1.5
- i0.1
- d0.05
+i0.1
+d0.05
 ```
 
 Recommended tuning order:
@@ -179,21 +180,26 @@ Benefits:
 - less sensitivity to load changes
 - improved balance stability
 
-### 2. Field‑Oriented Control (FOC)
+### 2. Field‑Oriented Control (FOC) — stroom-regulatie
 
-Motor control currently generates sinusoidal voltages based only on rotor angle.
+The motor driver already generates sinusoidal phase voltages based on encoder angle.
+This is the foundation of FOC (open‑loop).
 
-A future improvement would be implementing **FOC**:
+What is currently missing is the **inner current control loop**:
 
-- Clarke transform
-- Park transform
-- current regulation
+- Clarke transform (phase currents → αβ)
+- Park transform (αβ → dq, field-aligned)
+- PI current regulators on d and q axis
+- Inverse Park + Space Vector Modulation
 
-Benefits:
+The hardware already measures phase currents (AS5600 shunts).
 
+Benefits once implemented:
+
+- torque control instead of voltage control
 - higher efficiency
-- smoother torque
-- better control at low speeds
+- smoother response at low speeds
+- protection against overcurrent
 
 ### 3. Current Limiting
 
