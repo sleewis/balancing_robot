@@ -26,13 +26,15 @@ struct SharedState {
 
   // ── Telemetrie van fast → slow (alleen-lezen voor slow core) ─────────────
 
-  float currentTilt;    // [°]  gemeten kanteling (BNO055 pitch)
-  float currentAngle1;  // [rad] mechanische hoek motor 1 (AS5600)
-  float currentAngle2;  // [rad] mechanische hoek motor 2 (AS5600)
-  float pidOutput;      // [V]  laatste PID-uitgang (debug)
-  float avgCurrent1;    // [A]  gefilterde stroom motor 1
-  float avgCurrent2;    // [A]  gefilterde stroom motor 2
-  bool  motor1Ok;       // false bij encoder-fout of overstroom
+  float currentTilt;      // [°]    gemeten kanteling (BNO055 pitch)
+  float currentAngle1;   // [rad]  mechanische hoek motor 1 (AS5600)
+  float currentAngle2;   // [rad]  mechanische hoek motor 2 (AS5600)
+  float currentVelocity; // [rad/s] gemiddelde voorwaartse wielsnelheid
+  float targetVelocity;  // [rad/s] gewenste snelheid (uitgang tilt PID)
+  float pidOutput;       // [V]    uitgang velocity PID → motor (debug)
+  float avgCurrent1;     // [A]    gefilterde stroom motor 1
+  float avgCurrent2;     // [A]    gefilterde stroom motor 2
+  bool  motor1Ok;        // false bij encoder-fout of overstroom
   bool  motor2Ok;
 };
 

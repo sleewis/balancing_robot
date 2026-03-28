@@ -25,6 +25,15 @@
 // Klein genoeg om de rotor zacht te verplaatsen, groot genoeg om aan te trekken.
 #define ALIGN_VOLTAGE   3.0f    // [V]
 
+// ─── Snelheidsberekening ──────────────────────────────────────────────────────
+// Verwachte aanroepfrequentie van loop() — gebruikt voor hoeksnelheid [rad/s].
+// Aanpassen als de fast task op een andere frequentie draait.
+#define MOTOR_DT        0.002f   // [s]  1 / 500 Hz
+
+// Low-pass filter coëfficiënt voor de snelheidsmeting (0 = geen filter, 1 = bevroren)
+// Hogere waarde → soepeler maar trage respons; lagere waarde → sneller maar meer ruis.
+#define VELOCITY_ALPHA  0.80f
+
 // ─── Stroombeveiliging ────────────────────────────────────────────────────────
 // Totale som van |Ia| + |Ib| + |Ic|.
 // Controleer het datasheet van jouw motor voor de maximale fasestroom.
@@ -55,13 +64,17 @@ public:
   bool  isOvercurrent()   const { return _overcurrent; }
 
   // Laatste gemeten mechanische hoek [rad]
-  float getAngle()       const { return lastMechAngle; }
+  float getAngle()        const { return lastMechAngle; }
+
+  // Gefilterde mechanische hoeksnelheid [rad/s]
+  // Positief = draait in de richting van toenemende encoder-hoek
+  float getVelocity()     const { return _velocity; }
 
   // Gefilterde totale fasestroom [A] (EMA, tijdconstante ≈ 20 ms @ 500 Hz)
-  float getAvgCurrent()  const { return avgI; }
+  float getAvgCurrent()   const { return avgI; }
 
   // Directe piekstroom [A] voor dit moment (gebruikt voor overstroom-detectie)
-  float getPeakCurrent() const { return peakI; }
+  float getPeakCurrent()  const { return peakI; }
 
 private:
   // GPIO-pinnen
@@ -76,7 +89,11 @@ private:
   // Encoder & positie
   uint16_t rawAngle;       // ruwe AS5600-waarde (0–4095)
   float    lastMechAngle;  // laatste mechanische hoek [rad]
+  float    prevMechAngle;  // mechanische hoek van vorige cyclus (voor snelheid)
   float    offset;         // elektrische offset bepaald tijdens uitlijning [rad]
+
+  // Snelheid
+  float    _velocity;      // gefilterde mechanische hoeksnelheid [rad/s]
 
   // Stroommetingen
   float avgIa, avgIb, avgIc;  // EMA per fase [A]

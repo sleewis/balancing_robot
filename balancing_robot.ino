@@ -5,8 +5,8 @@
 #include "SharedState.h"
 
 // ─── Veiligheidsdrempel ───────────────────────────────────────────────────────
-// Als de kanteling groter is dan deze hoek, worden de motoren uitgeschakeld
-// en wordt de PID gereset om integrator-windup te voorkomen.
+// Als de kanteling groter is dan deze hoek, worden beide PIDs gereset en
+// de motoren uitgeschakeld om integrator-windup te voorkomen.
 #define TILT_LIMIT_DEG  30.0f
 
 // ─── I2C-bussen ───────────────────────────────────────────────────────────────
@@ -22,35 +22,65 @@ Motor motor2(26, 27, 14, 12, 34, 35, &I2C_2, 11);
 // ─── IMU ──────────────────────────────────────────────────────────────────────
 IMU imu(&I2C_1);  // BNO055 op I2C_1, adres 0x28
 
-// ─── PID ──────────────────────────────────────────────────────────────────────
-// Gains zijn PLACEHOLDER-waarden — moeten worden afgestemd!
-// Begin met alleen Kp (Ki=0, Kd=0) en verhoog voorzichtig.
+// ─── CASCADE REGELAAR ─────────────────────────────────────────────────────────
 //
-//  Kp  te laag  → robot valt langzaam; te hoog → oscillaties
-//  Kd          → dempt oscillaties; te hoog → versterkt sensor-ruis
-//  Ki          → corrigeert mechanisch onevenwicht; voeg pas toe als P+D stabiel is
+//  Buitenste lus (tilt PID) — langzame fout → gewenste snelheid:
+//    fout     = gemeten kanteling [°] − gewenste kanteling [°]
+//    uitgang  = gewenste wielsnelheid [rad/s]
 //
-// Uitgang [V]: positief = voorover rijden, negatief = achteruit
+//  Binnenste lus (velocity PID) — snelheidsfout → motorspanning:
+//    fout     = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
+//    uitgang  = motorspanning [V]
+//
+// ── Afsteladvies ─────────────────────────────────────────────────────────────
+//  1. Begin met velocity PID alleen (tiltPID.Kp = 0), geef een vaste
+//     targetVelocity van 0 rad/s en controleer of de wielen stilhouden.
+//     Stem vp en vi af tot de snelheid stabiel op 0 blijft.
+//
+//  2. Zet daarna tiltPID.Kp op een kleine waarde (bijv. 0.5).
+//     De robot probeert nu te balanceren door de snelheid bij te sturen.
+//     Verhoog Kp tot de robot goed reageert op kanteling.
+//
+//  3. Voeg tiltPID.Kd toe om oscillaties te dempen.
+//     Voeg tiltPID.Ki pas als laatste toe voor langzame drift.
+//
+// Serieel afstellen: zie slowTask hieronder.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Buitenste lus: tilt [°] → gewenste snelheid [rad/s]
+// Uitgangslimieten bepalen de maximale rijsnelheid — niet te hoog instellen!
 PID tiltPID(
-  /*Kp*/  1.5f,
+  /*Kp*/  2.0f,    // [rad/s per °]  begin hier
   /*Ki*/  0.0f,
   /*Kd*/  0.05f,
-  /*min*/ -12.0f,
-  /*max*/  12.0f
+  /*min*/ -5.0f,   // [rad/s] max achteruit
+  /*max*/  5.0f    // [rad/s] max vooruit
+);
+
+// Binnenste lus: snelheidsfout [rad/s] → motorspanning [V]
+// Stem deze PID eerst af voordat je de tilt PID aanzet.
+PID velocityPID(
+  /*Kp*/  0.5f,    // [V per rad/s]
+  /*Ki*/  0.2f,    // integrator corrigeert slippen en lading
+  /*Kd*/  0.0f,    // afgeleide van snelheid is te ruis-gevoelig
+  /*min*/ -10.0f,  // [V] = VOLTAGE_LIMIT
+  /*max*/  10.0f
 );
 
 // ─── Gedeelde toestand & mutex ────────────────────────────────────────────────
 SemaphoreHandle_t xSharedMutex;
 SharedState gShared = {
-  .targetTilt    = 0.0f,
-  .currentTilt   = 0.0f,
-  .currentAngle1 = 0.0f,
-  .currentAngle2 = 0.0f,
-  .pidOutput     = 0.0f,
-  .avgCurrent1   = 0.0f,
-  .avgCurrent2   = 0.0f,
-  .motor1Ok      = false,
-  .motor2Ok      = false,
+  .targetTilt      = 0.0f,
+  .currentTilt     = 0.0f,
+  .currentAngle1   = 0.0f,
+  .currentAngle2   = 0.0f,
+  .currentVelocity = 0.0f,
+  .targetVelocity  = 0.0f,
+  .pidOutput       = 0.0f,
+  .avgCurrent1     = 0.0f,
+  .avgCurrent2     = 0.0f,
+  .motor1Ok        = false,
+  .motor2Ok        = false,
 };
 
 
@@ -59,12 +89,13 @@ SharedState gShared = {
 //
 //  Volgorde per cyclus:
 //    1. Lees targetTilt van slow core (non-blocking mutex)
-//    2. Lees IMU elke 5 cycli  → 100 Hz (BNO055 fusion-snelheid)
-//    3. Voer PID uit
-//    4. Veiligheidscheck: snijd stroom bij te grote kanteling
-//    5. Stuur motoren aan
-//    6. Schrijf telemetrie terug naar gShared (non-blocking)
-//    7. Wacht op volgend 2ms-slot
+//    2. Lees IMU elke 5 cycli → 100 Hz
+//    3. Buitenste lus: tilt PID → gewenste snelheid
+//    4. Veiligheidscheck: reset & stop bij te grote kanteling
+//    5. Binnenste lus: velocity PID → motorspanning
+//    6. Stuur motoren aan
+//    7. Schrijf telemetrie terug naar gShared
+//    8. Wacht op volgend 2ms-slot
 // ═════════════════════════════════════════════════════════════════════════════
 void fastTask(void *pvParameters) {
   motor1.begin();
@@ -73,9 +104,9 @@ void fastTask(void *pvParameters) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xPeriod = pdMS_TO_TICKS(2);  // 2 ms = 500 Hz
 
-  const float DT = 0.002f;                // [s] tijdstap voor PID
-  float targetTilt = 0.0f;               // lokale kopie van gShared.targetTilt
-  uint8_t imuDiv = 0;                    // teller voor IMU-decimering (÷5)
+  const float DT       = 0.002f;   // [s] tijdstap
+  float targetTilt     = 0.0f;     // lokale kopie van gShared.targetTilt
+  uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷5 = 100 Hz)
 
   while (true) {
     // ── 1) Lees target van slow core ─────────────────────────────────────────
@@ -91,41 +122,47 @@ void fastTask(void *pvParameters) {
     }
     float tilt = imu.getTilt();
 
-    // ── 3) Balanceer-PID ─────────────────────────────────────────────────────
-    // fout = huidige kanteling − gewenste kanteling
-    // Positieve fout (voorover) → positief voltage → motoren rijden vooruit
-    float error  = tilt - targetTilt;
-    float voltage = tiltPID.update(error, DT);
+    // ── 3) Buitenste lus: tilt PID → gewenste wielsnelheid ───────────────────
+    // Bij positieve kanteling (voorover) → positieve doelsnelheid (rijdt vooruit)
+    // zodat de wielen de massa achterop lopen en de robot rechtop trekt.
+    float tiltError     = tilt - targetTilt;
+    float velTarget     = tiltPID.update(tiltError, DT);
 
-    // ── 4) Veiligheidscheck tilt ─────────────────────────────────────────────
-    // Schakel motoren uit als de robot te ver kantelt of de IMU niet gereed is.
-    // Motor.loop() handelt encoder- en overstroom-fouten zelf af.
+    // ── 4) Veiligheidscheck ───────────────────────────────────────────────────
     bool safe = (fabsf(tilt) < TILT_LIMIT_DEG) && imu.isReady();
     if (!safe) {
-      voltage = 0.0f;
-      tiltPID.reset();  // voorkom integrator-windup na noodstop
+      velTarget = 0.0f;
+      tiltPID.reset();
+      velocityPID.reset();
     }
 
-    // ── 5) Motoraansturing ────────────────────────────────────────────────────
-    // Motor 2 is gespiegeld gemonteerd → omgekeerd teken.
+    // ── 5) Binnenste lus: velocity PID → motorspanning ───────────────────────
+    // Gemiddelde voorwaartse wielsnelheid: motor 2 is gespiegeld → teken omdraaien.
+    float avgVelocity = (motor1.getVelocity() - motor2.getVelocity()) * 0.5f;
+    float velError    = velTarget - avgVelocity;
+    float voltage     = velocityPID.update(velError, DT);
+
+    // ── 6) Motoraansturing ────────────────────────────────────────────────────
     // Motor.loop() stopt automatisch bij encoder-fout of overstroom.
     motor1.loop( voltage);
     motor2.loop(-voltage);
 
-    // ── 6) Telemetrie → slow core (non-blocking) ──────────────────────────────
+    // ── 7) Telemetrie → slow core (non-blocking) ──────────────────────────────
     if (xSemaphoreTake(xSharedMutex, 0) == pdTRUE) {
-      gShared.currentTilt   = tilt;
-      gShared.currentAngle1 = motor1.getAngle();
-      gShared.currentAngle2 = motor2.getAngle();
-      gShared.pidOutput     = voltage;
-      gShared.avgCurrent1   = motor1.getAvgCurrent();
-      gShared.avgCurrent2   = motor2.getAvgCurrent();
-      gShared.motor1Ok      = motor1.isOk();
-      gShared.motor2Ok      = motor2.isOk();
+      gShared.currentTilt     = tilt;
+      gShared.currentAngle1   = motor1.getAngle();
+      gShared.currentAngle2   = motor2.getAngle();
+      gShared.currentVelocity = avgVelocity;
+      gShared.targetVelocity  = velTarget;
+      gShared.pidOutput       = voltage;
+      gShared.avgCurrent1     = motor1.getAvgCurrent();
+      gShared.avgCurrent2     = motor2.getAvgCurrent();
+      gShared.motor1Ok        = motor1.isOk();
+      gShared.motor2Ok        = motor2.isOk();
       xSemaphoreGive(xSharedMutex);
     }
 
-    // ── 7) Wacht op volgend 2ms-slot ──────────────────────────────────────────
+    // ── 8) Wacht op volgend 2ms-slot ──────────────────────────────────────────
     vTaskDelayUntil(&xLastWakeTime, xPeriod);
   }
 }
@@ -134,18 +171,23 @@ void fastTask(void *pvParameters) {
 // ═════════════════════════════════════════════════════════════════════════════
 //  SLOW TASK — Core 1  (~50 Hz)
 //
-//  Verantwoordelijk voor:
-//    - PID live-tuning via serieel (type: "p1.5 i0.0 d0.05")
-//    - Debug-output
-//    - TODO: BT / XBOX-controller → targetTilt aanpassen
+//  Seriële live-tuning — stuur commando's via de seriële monitor:
+//
+//    Tilt PID:      p<waarde>   i<waarde>   d<waarde>
+//    Velocity PID:  vp<waarde>  vi<waarde>  vd<waarde>
+//    Target tilt:   t<waarde>   (handmatig instellen in graden)
+//
+//  Voorbeelden:  "p2.0"   "vp0.5"   "t3.0"
 // ═════════════════════════════════════════════════════════════════════════════
 void slowTask(void *pvParameters) {
   while (true) {
     // ── Lees telemetrie van fast core ─────────────────────────────────────────
-    float tilt, pidOut, cur1, cur2;
+    float tilt, vel, velTgt, pidOut, cur1, cur2;
     bool  ok1, ok2;
     if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
       tilt   = gShared.currentTilt;
+      vel    = gShared.currentVelocity;
+      velTgt = gShared.targetVelocity;
       pidOut = gShared.pidOutput;
       cur1   = gShared.avgCurrent1;
       cur2   = gShared.avgCurrent2;
@@ -155,29 +197,40 @@ void slowTask(void *pvParameters) {
     }
 
     // ── Seriële debug-output ──────────────────────────────────────────────────
-    Serial.printf("[slow] tilt=%6.2f°  pid=%6.3fV  I1=%5.2fA  I2=%5.2fA  M1=%s  M2=%s\n",
-                  tilt, pidOut, cur1, cur2,
-                  ok1 ? "OK" : "FOUT",
-                  ok2 ? "OK" : "FOUT");
+    Serial.printf(
+      "[slow] tilt=%6.2f°  vel=%6.2f→%5.2f rad/s  out=%6.3fV  I1=%5.2fA  I2=%5.2fA  M1=%s  M2=%s\n",
+      tilt, vel, velTgt, pidOut, cur1, cur2,
+      ok1 ? "OK" : "FOUT",
+      ok2 ? "OK" : "FOUT"
+    );
 
-    // ── Seriële live-tuning van PID-gains ────────────────────────────────────
-    // Stuur via serieel monitor: "p1.5"  "i0.1"  "d0.05"
+    // ── Seriële live-tuning ───────────────────────────────────────────────────
     if (Serial.available()) {
       String cmd = Serial.readStringUntil('\n');
       cmd.trim();
+
       if (cmd.length() >= 2) {
-        char   key = cmd.charAt(0);
-        float  val = cmd.substring(1).toFloat();
-        if      (key == 'p') { tiltPID.Kp = val; Serial.printf("Kp = %.4f\n", val); }
-        else if (key == 'i') { tiltPID.Ki = val; Serial.printf("Ki = %.4f\n", val); }
-        else if (key == 'd') { tiltPID.Kd = val; Serial.printf("Kd = %.4f\n", val); }
-        else if (key == 't') {
-          // Overschrijf targetTilt handmatig: "t2.5"
-          if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
-            gShared.targetTilt = val;
-            xSemaphoreGive(xSharedMutex);
+        // Velocity PID: commando begint met 'v' gevolgd door p/i/d
+        if (cmd.charAt(0) == 'v' && cmd.length() >= 3) {
+          char  key = cmd.charAt(1);
+          float val = cmd.substring(2).toFloat();
+          if      (key == 'p') { velocityPID.Kp = val; Serial.printf("velocity Kp = %.4f\n", val); }
+          else if (key == 'i') { velocityPID.Ki = val; Serial.printf("velocity Ki = %.4f\n", val); }
+          else if (key == 'd') { velocityPID.Kd = val; Serial.printf("velocity Kd = %.4f\n", val); }
+        } else {
+          // Tilt PID of target
+          char  key = cmd.charAt(0);
+          float val = cmd.substring(1).toFloat();
+          if      (key == 'p') { tiltPID.Kp = val; Serial.printf("tilt Kp = %.4f\n", val); }
+          else if (key == 'i') { tiltPID.Ki = val; Serial.printf("tilt Ki = %.4f\n", val); }
+          else if (key == 'd') { tiltPID.Kd = val; Serial.printf("tilt Kd = %.4f\n", val); }
+          else if (key == 't') {
+            if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
+              gShared.targetTilt = val;
+              xSemaphoreGive(xSharedMutex);
+            }
+            Serial.printf("targetTilt = %.2f°\n", val);
           }
-          Serial.printf("targetTilt = %.2f°\n", val);
         }
       }
     }
@@ -203,14 +256,13 @@ void setup() {
   // BNO055 initialiseren
   if (!imu.begin()) {
     Serial.println("[ERROR] BNO055 niet gevonden! Controleer bedrading op I2C_1 (GPIO19/18).");
-    // Doorgaan zonder IMU — fastTask controleert imu.isReady() en schakelt motoren uit
   } else {
     Serial.println("[OK] BNO055 gevonden.");
   }
 
   xSharedMutex = xSemaphoreCreateMutex();
 
-  // Fast task: Core 0, hogere prioriteit zodat motorloop nooit blokkeert
+  // Fast task: Core 0, hogere prioriteit zodat de motorloop nooit blokkeert
   xTaskCreatePinnedToCore(fastTask, "FastTask", 4096, NULL, 2, NULL, 0);
   // Slow task: Core 1, lagere prioriteit
   xTaskCreatePinnedToCore(slowTask, "SlowTask", 4096, NULL, 1, NULL, 1);

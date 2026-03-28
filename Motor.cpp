@@ -19,7 +19,11 @@ Motor::Motor(int u, int v, int w, int en,
   // Encoder & positie
   rawAngle      = 0;
   lastMechAngle = 0.0f;
+  prevMechAngle = 0.0f;
   offset        = 0.0f;
+
+  // Snelheid
+  _velocity = 0.0f;
 
   // Stroommetingen
   avgIa = avgIb = avgIc = avgI = peakI = 0.0f;
@@ -178,6 +182,21 @@ void Motor::loop(float voltage) {
   // Converteer ruwe encoder-waarde (0–4095) naar mechanische hoek [rad]
   lastMechAngle = rawAngle * (TWO_PI / 4096.0f);
 
+  // ── Stap 1b: hoeksnelheid berekenen ──────────────────────────────────────
+  // Differenteer de mechanische hoek over de vaste tijdstap MOTOR_DT.
+  // De hoek loopt van 0 tot 2π en wrapat terug naar 0, dus corrigeren we
+  // voor de overgang (bijv. van 6.2 naar 0.1 rad is geen grote sprong).
+  float delta = lastMechAngle - prevMechAngle;
+  if      (delta >  PI) delta -= TWO_PI;   // wrap van 2π → 0
+  else if (delta < -PI) delta += TWO_PI;   // wrap van 0 → 2π
+
+  float rawVelocity = delta / MOTOR_DT;
+
+  // Low-pass filter: dempt ruis zonder de respons te traag te maken
+  _velocity = VELOCITY_ALPHA * _velocity + (1.0f - VELOCITY_ALPHA) * rawVelocity;
+
+  prevMechAngle = lastMechAngle;
+
   // ── Stap 2: stroommetingen bijwerken & overstroom controleren ────────────
   updateCurrent();
 
@@ -236,6 +255,11 @@ void Motor::alignRotor() {
   // en de gemeten mechanische positie × polePairs
   float mech = rawAngle * (TWO_PI / 4096.0f);
   offset = 0.0f - mech * polePairs;
+
+  // Initialiseer prevMechAngle zodat de eerste snelheidsmeting nul oplevert
+  lastMechAngle = mech;
+  prevMechAngle = mech;
+  _velocity     = 0.0f;
 
   _encoderOk = true;
   brake();  // spanning weg na uitlijning

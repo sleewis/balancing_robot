@@ -142,19 +142,31 @@ Centrale structure voor gegevensuitwisseling tussen de twee cores via een mutex.
 
 # Regelstrategie
 
-De robot gebruikt één enkele tilt controller:
+De robot gebruikt een **cascade regelaar** met twee geneste PID-lussen:
 
 ```
-PID( tilt_error ) → motorspanning [V]
+Tilt PID → gewenste wielsnelheid [rad/s] → Velocity PID → motorspanning [V]
 ```
 
-Waarbij:
+**Buitenste lus — Tilt PID (500 Hz):**
 
 ```
-error = gemeten kanteling - gewenste kanteling
+fout = gemeten kanteling [°] − gewenste kanteling [°]
+uitgang = gewenste wielsnelheid [rad/s]
 ```
 
-Motor 2 is gespiegeld gemonteerd, waardoor het teken van de spanning omgekeerd is.
+Bij een positieve kanteling (voorover) stuurt de tilt PID een positieve doelsnelheid. De wielen rijden vooruit en lopen zo de massa achterop — de robot trekt zichzelf rechtop.
+
+**Binnenste lus — Velocity PID (500 Hz):**
+
+```
+fout = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
+uitgang = motorspanning [V]
+```
+
+De gemeten snelheid is het gemiddelde van beide motoren, gecorrigeerd voor de gespiegelde montage van motor 2.
+
+Het voordeel ten opzichte van directe spanningsregeling: de binnenste lus corrigeert automatisch voor slippen, belastingwisselingen en andere verstoringen. De buitenste lus hoeft alleen de kanteling bij te sturen.
 
 ---
 
@@ -187,22 +199,37 @@ De slow task geeft elke 20 ms de volgende uitvoer:
 
 # PID Afstellen
 
-PID-gains kunnen live worden aangepast via de seriële monitor zonder opnieuw te flashen:
+PID-gains kunnen live worden aangepast via de seriële monitor zonder opnieuw te flashen.
+
+**Tilt PID** (buitenste lus):
 
 ```
-p1.5
-i0.1
-d0.05
-t2.0
+p2.0    → tilt Kp instellen
+i0.0    → tilt Ki instellen
+d0.05   → tilt Kd instellen
+t3.0    → target tilt handmatig instellen [°]
 ```
 
-`t` stelt de target tilt handmatig in (in graden). Handig om te testen of de motoren in de goede richting reageren.
+**Velocity PID** (binnenste lus):
 
-Aanbevolen volgorde voor het afstellen:
+```
+vp0.5   → velocity Kp instellen
+vi0.2   → velocity Ki instellen
+vd0.0   → velocity Kd instellen
+```
 
-1. Begin met alleen **P** — verhoog tot de robot begint te oscilleren, halveer dan
-2. Voeg **D** toe om oscillaties te dempen
-3. Voeg **I** pas toe als de robot langzaam wegdrijft ondanks stabiele P+D
+Aanbevolen volgorde:
+
+1. Stem eerst de **velocity PID** af: zet tilt PID gains op 0, geef `t0` en controleer of de wielen stilhouden bij verstoring. Stem `vp` en `vi` af.
+2. Zet daarna `p` (tilt Kp) op een kleine waarde (bijv. 0.5) en verhoog tot de robot reageert op kanteling.
+3. Voeg `d` (tilt Kd) toe om oscillaties te dempen.
+4. Voeg `i` (tilt Ki) als laatste toe als de robot langzaam wegdrijft.
+
+De seriële monitor toont elke 20 ms:
+
+```
+[slow] tilt=  2.14°  vel= 0.12→ 0.43 rad/s  out= 3.210V  I1= 0.84A  I2= 0.81A  M1=OK  M2=OK
+```
 
 ---
 
@@ -210,29 +237,18 @@ Aanbevolen volgorde voor het afstellen:
 
 ## Motoraansturing
 
-### 1. Closed-loop snelheidsregeling
+### 1. Field-Oriented Control (FOC) — gesloten stroom-regelaar
 
-Momenteel worden de motoren direct aangestuurd via fasespanning.
+De motordriver genereert al sinusvormige fasespanningen op basis van de encoder-hoek — dit is de open-loop basis van FOC. De stroommetingen worden momenteel alleen gebruikt voor overstroom-beveiliging, niet voor regeling.
 
-Toekomstige verbetering: gebruik encoder-feedback om de **wielsnelheid** te regelen. Dit levert een cascade-regelaar op:
-
-```
-Tilt PID → gewenste wielsnelheid
-Snelheid PID → motorkoppel / spanning
-```
-
-Voordelen: soepelere beweging, minder gevoelig voor belastingwisselingen, betere balanceerstabiliteit.
-
-### 2. Field-Oriented Control (FOC) — stroom-regulatie
-
-De motordriver genereert al sinusvormige fasespanningen op basis van de encoder-hoek. Dit is de basis van FOC (open-loop). Wat nog ontbreekt is de **inner current control loop**:
+De volgende stap is een **gesloten stroom-regelaar**:
 
 - Clarke transform (fasestroom → αβ)
 - Park transform (αβ → dq, veld-uitgelijnd)
 - PI stroomregelaars op de d- en q-as
 - Inverse Park + Space Vector Modulation
 
-De hardware meet al fasestroom via de shunts — de infrastructuur is aanwezig.
+De hardware meet al fasestroom via de shunts en de infrastructuur in de code is aanwezig — de waarden zijn beschikbaar via `motor.getAvgCurrent()`.
 
 Voordelen: koppelregeling in plaats van spanningsregeling, hogere efficiëntie, soepelere respons bij lage snelheden.
 
@@ -256,4 +272,4 @@ De BNO055 levert gefuseerde Euler-hoeken die enige vertraging kunnen introducere
 
 Vroeg prototype.
 
-Kernarchitectuur, dual-core regellus, motoraansturing met foutafhandeling en balanceer-PID zijn geïmplementeerd. Momenteel gericht op het afstellen van de PID-gains voor stabiel balanceren.
+Kernarchitectuur, dual-core regellus, motoraansturing met foutafhandeling en cascade regelaar (tilt PID → velocity PID) zijn geïmplementeerd. Momenteel gericht op het afstellen van de PID-gains voor stabiel balanceren.
