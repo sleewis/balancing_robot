@@ -15,6 +15,7 @@ Motor::Motor(int u, int v, int w, int en,
   polePairs = poles;
 
   offset = 0;
+  lastMechAngle = 0;
   avgIa = avgIb = avgIc = avgI = 0;
 
   shunt = 0.01;
@@ -91,8 +92,9 @@ void Motor::setPhaseVoltage(float angle, float voltage) {
 
 void Motor::loop(float voltage) {
   float mech = getMechanicalAngle();
-  float elec = mech * polePairs + offset + PI / 2.0;
+  lastMechAngle = mech;                              // opslaan voor getAngle()
 
+  float elec = mech * polePairs + offset + PI / 2.0;
   setPhaseVoltage(elec, voltage);
 }
 

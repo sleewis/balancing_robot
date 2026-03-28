@@ -20,6 +20,10 @@ public:
   void begin();
   void loop(float voltage);
 
+  // Geeft de laatste gemeten mechanische hoek terug [rad]
+  // Veilig op te roepen vanuit fastTask na loop()
+  float getAngle() const { return lastMechAngle; }
+
 private:
   int U, V, W;
   int EN;
@@ -29,6 +33,7 @@ private:
   int polePairs;
 
   float offset;
+  float lastMechAngle;
   uint16_t rawAngle;
 
   float avgIa, avgIb, avgIc, avgI;
