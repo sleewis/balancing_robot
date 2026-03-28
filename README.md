@@ -1,48 +1,48 @@
 # Balancing Robot
 
-## Overview
+## Overzicht
 
-This project implements a two‑wheel self‑balancing robot using an ESP32. The control system is split into fast and slow tasks running on separate CPU cores to ensure deterministic motor control while still allowing debugging and live tuning.
+Dit project implementeert een zelfbalancerende robot op twee wielen met een ESP32. Het regelsysteem is opgesplitst in een snelle en een langzame task op aparte CPU-cores, zodat de motoraansturing deterministisch blijft terwijl debugging en live tuning toch mogelijk zijn.
 
-Main goals of the project:
+Doelen van het project:
 
-- Maintain upright balance using a tilt controller
-- Drive two BLDC motors with magnetic encoders
-- Use an IMU for tilt estimation
-- Allow live PID tuning during testing
+- Rechtop blijven staan met een tilt controller
+- Twee BLDC-motoren aansturen met magnetische encoders
+- Een IMU gebruiken voor kantelmeting
+- Live PID-tuning mogelijk maken tijdens het testen
 
-The architecture is intentionally modular so that sensors, motor drivers, and control algorithms can be improved independently.
+De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en regelalgoritmen onafhankelijk van elkaar verbeterd kunnen worden.
 
 ---
 
-# System Architecture
+# Systeemarchitectuur
 
-The ESP32 runs two FreeRTOS tasks:
+De ESP32 draait twee FreeRTOS-tasks:
 
 ## Fast Task (Core 0 – 500 Hz)
-Responsible for real‑time control.
+Verantwoordelijk voor real-time regeling.
 
-Execution cycle:
+Uitvoeringsvolgorde per cyclus:
 
-1. Read target tilt from shared state
-2. Update IMU (100 Hz decimated from loop)
-3. Run balance PID
-4. Safety check (tilt limit)
-5. Update motor voltages
-6. Publish telemetry
-7. Wait for next control tick
+1. Lees target tilt uit shared state
+2. Update IMU (100 Hz, gedecimeerd vanuit de loop)
+3. Voer balanceer-PID uit
+4. Veiligheidscontrole (tilt-limiet)
+5. Update motorspanningen
+6. Schrijf telemetrie terug
+7. Wacht op volgende control tick
 
-This loop must never block.
+Deze loop mag nooit blokkeren.
 
 ## Slow Task (Core 1 – ~50 Hz)
-Handles non‑critical work:
+Behandelt niet-kritische taken:
 
-- Serial debugging
-- PID live tuning
-- Controller input (future)
-- Telemetry output
+- Seriële debugging
+- Live PID-tuning
+- Controller-invoer (toekomstig)
+- Telemetrie-uitvoer
 
-Communication between tasks uses a mutex protected shared structure.
+Communicatie tussen de tasks verloopt via een mutex-beschermde shared structure.
 
 ---
 
@@ -52,92 +52,92 @@ Communication between tasks uses a mutex protected shared structure.
 
 MKS-ESP32FOC V2.0 (ESP32-gebaseerd motorstuurboard)
 
-## Sensors
+## Sensoren
 
 ### IMU
 
 BNO055
 
-Used for tilt measurement using Euler pitch.
+Gebruikt voor kantelmeting via Euler pitch.
 
 Verbonden op I2C bus 0 (GPIO 19/18), gedeeld met de encoder van motor 1.
 Adres BNO055: 0x28 — geen conflict met AS5600 (0x36).
 
 ### Motor Encoders
 
-AS5600 magnetic encoders.
+AS5600 magnetische encoders.
 
-Each motor has its own I2C bus to avoid address conflicts.
+Elke motor heeft zijn eigen I2C-bus om adresconflicten te voorkomen.
 
-## Motors
+## Motoren
 
-Two BLDC motors with three phase drivers.
+Twee BLDC-motoren met three-phase drivers.
 
-Motor phases are driven using ESP32 LEDC PWM outputs.
+De motorfases worden aangestuurd via ESP32 LEDC PWM-uitgangen.
 
 ---
 
-# Software Components
+# Softwarecomponenten
 
 ## Motor
 
-Responsible for:
+Verantwoordelijk voor:
 
-- Reading magnetic encoder
-- Generating three‑phase sinusoidal voltage
-- Rotor alignment at startup
+- Uitlezen van de magnetische encoder
+- Genereren van sinusvormige three-phase spanning
+- Rotor-uitlijning bij opstarten
 
-Currently the motor control is open‑loop voltage based.
+De motoraansturing is momenteel open-loop op basis van spanning.
 
 ## IMU
 
-Minimal BNO055 driver configured in **IMUPLUS mode**.
+Minimale BNO055-driver geconfigureerd in **IMUPLUS-modus**.
 
-Only pitch is used for balancing.
+Alleen de pitch wordt gebruikt voor het balanceren.
 
 ## PID Controller
 
-Generic PID implementation with:
+Generieke PID-implementatie met:
 
-- anti‑windup
-- runtime gain adjustment
+- anti-windup
+- aanpasbare gains tijdens runtime
 
 ## SharedState
 
-Small structure used to exchange data between the fast and slow cores.
+Kleine structure voor gegevensuitwisseling tussen de fast en slow core.
 
 ---
 
-# Control Strategy
+# Regelstrategie
 
-The robot uses a single tilt controller:
+De robot gebruikt één enkele tilt controller:
 
-PID( tilt_error ) → motor voltage
+PID( tilt_error ) → motorspanning
 
-Where:
+Waarbij:
 
 ```
-error = measuredTilt - targetTilt
+error = gemeten kanteling - gewenste kanteling
 ```
 
-Motor 2 is mounted mirrored so the sign of its voltage is inverted.
+Motor 2 is gespiegeld gemonteerd, waardoor het teken van de spanning omgekeerd is.
 
 ---
 
-# Safety
+# Veiligheid
 
-Motor output is disabled if:
+De motoruitgang wordt uitgeschakeld als:
 
-- IMU is not ready
-- tilt angle exceeds safety threshold
+- de IMU niet gereed is
+- de kanteling de veiligheidsdrempel overschrijdt
 
-The PID integrator is reset during safety shutdown to avoid wind‑up.
+De PID-integrator wordt gereset bij een veiligheidsuitschakeling om wind-up te voorkomen.
 
 ---
 
-# Tuning PID
+# PID Afstellen
 
-PID gains can be tuned live via serial:
+PID-gains kunnen live worden aangepast via de seriële monitor:
 
 ```
 p1.5
@@ -145,111 +145,108 @@ i0.1
 d0.05
 ```
 
-Recommended tuning order:
+Aanbevolen volgorde voor het afstellen:
 
-1. Start with **P only**
-2. Add **D** to damp oscillations
-3. Add **I** only if robot slowly drifts
+1. Begin met alleen **P**
+2. Voeg **D** toe om oscillaties te dempen
+3. Voeg **I** pas toe als de robot langzaam wegdrijft
 
 ---
 
-# Future Improvements
+# Toekomstige verbeteringen
 
-## Motor Control Improvements
+## Motoraansturing
 
-The current motor implementation is intentionally simple and should be improved.
+De huidige motorimplementatie is bewust eenvoudig gehouden en kan worden verbeterd.
 
-### 1. Closed Loop Velocity Control
+### 1. Closed-loop snelheidsregeling
 
-Currently motors are driven by direct phase voltage.
+Momenteel worden de motoren direct aangestuurd via fasespanning.
 
-Future improvement:
+Toekomstige verbetering: gebruik encoder-feedback om de **wielsnelheid** te regelen.
 
-Use encoder feedback to regulate **wheel velocity**.
-
-This creates a cascade controller:
+Dit levert een cascade-regelaar op:
 
 ```
-Tilt PID → desired wheel velocity
-Velocity PID → motor torque / voltage
+Tilt PID → gewenste wielsnelheid
+Snelheid PID → motorkoppel / spanning
 ```
 
-Benefits:
+Voordelen:
 
-- smoother motion
-- less sensitivity to load changes
-- improved balance stability
+- soepelere beweging
+- minder gevoelig voor belastingwisselingen
+- betere balanceerstabiliteit
 
-### 2. Field‑Oriented Control (FOC) — stroom-regulatie
+### 2. Field-Oriented Control (FOC) — stroom-regulatie
 
-The motor driver already generates sinusoidal phase voltages based on encoder angle.
-This is the foundation of FOC (open‑loop).
+De motordriver genereert al sinusvormige fasespanningen op basis van de encoder-hoek.
+Dit is de basis van FOC (open-loop).
 
-What is currently missing is the **inner current control loop**:
+Wat nog ontbreekt is de **inner current control loop**:
 
-- Clarke transform (phase currents → αβ)
-- Park transform (αβ → dq, field-aligned)
-- PI current regulators on d and q axis
+- Clarke transform (fasestroom → αβ)
+- Park transform (αβ → dq, veld-uitgelijnd)
+- PI stroomregelaars op de d- en q-as
 - Inverse Park + Space Vector Modulation
 
-The hardware already measures phase currents (AS5600 shunts).
+De hardware meet al fasestroom via de shunts.
 
-Benefits once implemented:
+Voordelen na implementatie:
 
-- torque control instead of voltage control
-- higher efficiency
-- smoother response at low speeds
-- protection against overcurrent
+- koppelregeling in plaats van spanningsregeling
+- hogere efficiëntie
+- soepelere respons bij lage snelheden
+- beveiliging tegen overstroom
 
-### 3. Current Limiting
+### 3. Stroombegrenzing
 
-Current is already measured but not yet used.
+Stroom wordt al gemeten maar nog niet gebruikt.
 
-Future use:
+Toekomstig gebruik:
 
-- motor protection
-- torque control
-- fault detection
+- motorbeveiliging
+- koppelregeling
+- foutdetectie
 
-### 4. Encoder Failure Handling
+### 4. Encoder-foutafhandeling
 
-Encoder read currently waits until data is available.
+De encoder-uitlezing wacht momenteel totdat data beschikbaar is.
 
-Future improvement:
+Toekomstige verbetering:
 
-- timeout detection
-- motor shutdown on sensor loss
-
----
-
-# Possible Sensor Improvements
-
-The BNO055 provides fused Euler angles which may introduce latency.
-
-Future improvement could include:
-
-- raw gyro + accelerometer fusion
-- complementary or Kalman filter
-
-Lower latency improves balancing performance.
+- timeout-detectie
+- motoruitschakeling bij sensorverlies
 
 ---
 
-# Planned Features
+# Mogelijke sensorverbeteringen
 
-- Bluetooth controller input
-- speed control
-- steering control
-- telemetry streaming
-- autonomous stabilization modes
+De BNO055 levert gefuseerde Euler-hoeken die enige vertraging kunnen introduceren.
+
+Mogelijke toekomstige verbetering:
+
+- ruwe gyro + accelerometer fusie
+- complementair filter of Kalman filter
+
+Lagere vertraging verbetert de balanseerprestaties.
 
 ---
 
-# Project Status
+# Geplande functies
 
-Early prototype.
+- Bluetooth controller-invoer
+- snelheidsregeling
+- stuurregeling
+- telemetrie streaming
+- autonome stabilisatiemodi
 
-Core architecture and control loop implemented.
+---
 
-Currently focused on achieving stable balancing before expanding functionality.
+# Projectstatus
 
+Vroeg prototype.
+
+Kernarchitectuur en regelloop zijn geïmplementeerd.
+
+Momenteel gericht op het bereiken van stabiel balanceren voordat functionaliteit wordt uitgebreid.
