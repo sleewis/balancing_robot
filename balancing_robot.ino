@@ -1,4 +1,14 @@
 
+// ═════════════════════════════════════════════════════════════════════════════
+//  Balancing Robot — Sjoerd Leewis
+//
+//  Geschreven in samenwerking met Claude (Anthropic).
+//  Claude heeft geholpen met de architectuur, motoraansturing, PID-cascade
+//  en alle andere code in dit project.
+//
+//  "Hopelijk werkt het nog daarna haha" — Sjoerd, maart 2026
+// ═════════════════════════════════════════════════════════════════════════════
+
 #include "Motor.h"
 #include "IMU.h"
 #include "PID.h"
