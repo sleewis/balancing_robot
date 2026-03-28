@@ -11,22 +11,25 @@
 //
 // Schrijven: altijd via xSharedMutex
 // Lezen:     fast core probeert non-blocking (timeout 0); als de mutex bezet
-//            is, gebruikt hij de vorige waarde.
+//            is, gebruikt hij de vorige waarde — motorloop blokkeert nooit.
 // ─────────────────────────────────────────────────────────────────────────────
 struct SharedState {
 
   // ── Targets van slow → fast ──────────────────────────────────────────────
-  float targetVoltage1;   // [V] voltage-commando voor motor 1
-  float targetVoltage2;   // [V] voltage-commando voor motor 2
 
-  // Toekomstige PID-targets (uncomment wanneer PID wordt toegevoegd):
-  // float targetTilt;    // [rad] gewenste kanteling voor balanceer-PID
-  // float targetSpeed;   // [m/s] gewenste rijsnelheid
-  // float targetYaw;     // [rad/s] gewenste draaisnelheid (XBOX joystick)
+  // Gewenste kanteling [°] — 0 = rechtop staand
+  // Slow core past dit aan op basis van XBOX-joystick (voor/achter rijden)
+  float targetTilt;
 
-  // ── Telemetrie van fast → slow (read-only voor slow core) ────────────────
-  float currentAngle1;    // [rad] gemeten mechanische hoek motor 1
-  float currentAngle2;    // [rad] gemeten mechanische hoek motor 2
+  // Toekomstige uitbreidingen:
+  // float targetYaw;     // [°/s] draaisnelheid (XBOX rechter joystick)
+
+  // ── Telemetrie van fast → slow (alleen-lezen voor slow core) ─────────────
+
+  float currentTilt;    // [°]  gemeten kanteling (BNO055 pitch)
+  float currentAngle1;  // [rad] mechanische hoek motor 1 (AS5600)
+  float currentAngle2;  // [rad] mechanische hoek motor 2 (AS5600)
+  float pidOutput;      // [V]  laatste PID-uitgang (debug)
 };
 
 // Globale instanties — gedefinieerd in balancing_robot.ino
