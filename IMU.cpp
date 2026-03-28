@@ -2,29 +2,78 @@
 #include "IMU.h"
 
 IMU::IMU(TwoWire *bus, uint8_t addr)
-  : _bno(55, addr, bus), _tilt(0.0f), _ready(false)
+  : _wire(bus), _addr(addr), _tilt(0.0f), _ready(false)
 {}
 
-bool IMU::begin() {
-  _ready = _bno.begin();
-  if (_ready) {
-    // Gebruik externe kristal voor hogere nauwkeurigheid
-    _bno.setExtCrystalUse(true);
-  }
-  return _ready;
+// ─── Hulpfuncties ─────────────────────────────────────────────────────────────
+
+bool IMU::writeReg(uint8_t reg, uint8_t val) {
+  _wire->beginTransmission(_addr);
+  _wire->write(reg);
+  _wire->write(val);
+  return (_wire->endTransmission() == 0);
 }
+
+bool IMU::readRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
+  _wire->beginTransmission(_addr);
+  _wire->write(reg);
+  if (_wire->endTransmission(false) != 0) return false;
+
+  uint8_t received = _wire->requestFrom(_addr, len);
+  if (received != len) return false;
+
+  for (uint8_t i = 0; i < len; i++) {
+    buf[i] = _wire->read();
+  }
+  return true;
+}
+
+// ─── Initialisatie ────────────────────────────────────────────────────────────
+
+bool IMU::begin() {
+  // Controleer chip-ID
+  uint8_t chipId = 0;
+  if (!readRegs(BNO055_CHIP_ID_REG, &chipId, 1) || chipId != 0xA0) {
+    return false;
+  }
+
+  // Reset naar config-modus
+  writeReg(BNO055_OPR_MODE, BNO055_MODE_CONFIG);
+  delay(25);  // BNO055 heeft ~19 ms nodig voor moduswisseling
+
+  // Normaal vermogen
+  writeReg(BNO055_PWR_MODE, 0x00);
+  delay(10);
+
+  // Extern kristal inschakelen (hogere nauwkeurigheid)
+  writeReg(BNO055_SYS_TRIGGER, 0x80);
+  delay(10);
+
+  // Zet in IMUPLUS-modus (accel + gyro, geen magnetometer)
+  writeReg(BNO055_OPR_MODE, BNO055_MODE_IMUPLUS);
+  delay(25);  // BNO055 heeft ~7 ms nodig voor moduswisseling naar fusion
+
+  _ready = true;
+  return true;
+}
+
+// ─── Datauitlezing ────────────────────────────────────────────────────────────
 
 void IMU::update() {
   if (!_ready) return;
 
-  imu::Vector<3> euler = _bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+  // Lees 6 bytes Euler-hoeken vanaf register 0x1A:
+  //   bytes[0..1] = heading (yaw),  LSB eerst
+  //   bytes[2..3] = roll,           LSB eerst
+  //   bytes[4..5] = pitch,          LSB eerst
+  // Schaal: 1 LSB = 1/16 graad
+  uint8_t buf[6];
+  if (!readRegs(BNO055_EUL_DATA, buf, 6)) return;
 
-  // euler[0] = heading (Z), euler[1] = pitch/roll (Y), euler[2] = roll/pitch (X)
-  // Kies de juiste as via TILT_AXIS en pas richting aan via TILT_SIGN
-  float raw = 0.0f;
-  if      (TILT_AXIS == 0) raw = euler.x();
-  else if (TILT_AXIS == 1) raw = euler.y();
-  else                      raw = euler.z();
+  int16_t raw[3];
+  raw[0] = (int16_t)((buf[1] << 8) | buf[0]);  // heading
+  raw[1] = (int16_t)((buf[3] << 8) | buf[2]);  // roll
+  raw[2] = (int16_t)((buf[5] << 8) | buf[4]);  // pitch
 
-  _tilt = TILT_SIGN * raw;
+  _tilt = TILT_SIGN * (raw[TILT_AXIS] / BNO055_EULER_SCALE);
 }
