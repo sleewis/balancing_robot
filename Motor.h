@@ -50,8 +50,16 @@ public:
         TwoWire *wbus,
         int poles);
 
-  // Initialiseer PWM-kanalen en voer rotor-uitlijning uit
+  // Initialiseer PWM-kanalen (zonder uitlijning)
   void begin();
+
+  // Stap 1 van parallelle uitlijning: zet uitlijningsspanning aan (geen delay)
+  // Aanroepen voor beide motoren, daarna één gedeelde delay(2000), dan alignFinish()
+  void alignStart();
+
+  // Stap 2 van parallelle uitlijning: lees encoder en bereken offset
+  // Aanroepen na de gedeelde delay
+  void alignFinish();
 
   // Hoofd-regellus — aanroepen op vaste tijdstap (bijv. 500 Hz)
   // voltage: gewenste spanning [V], bereik [-VOLTAGE_LIMIT, +VOLTAGE_LIMIT]
@@ -129,8 +137,7 @@ private:
   // Zet alle fases op 50% duty cycle (= nulspanning, vrij draaien)
   void brake();
 
-  // Bepaal elektrische offset bij opstarten
-  void alignRotor();
+  // Interne hulpfunctie — gebruik alignStart() + alignFinish() vanuit de task
 };
 
 #endif // MOTOR_H

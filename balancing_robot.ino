@@ -106,8 +106,18 @@ SharedState gShared = {
 //    8. Wacht op volgend 2ms-slot
 // ═════════════════════════════════════════════════════════════════════════════
 void fastTask(void *pvParameters) {
+  // ── Hardware initialisatie ────────────────────────────────────────────────
   motor1.begin();
   motor2.begin();
+
+  // ── Parallelle rotor-uitlijning ───────────────────────────────────────────
+  // Beide motoren starten tegelijk zodat de wachttijd maar één keer valt.
+  // Totale uitlijntijd: ~2 s in plaats van 2 × 3 s = 6 s.
+  motor1.alignStart();
+  motor2.alignStart();
+  delay(2000);
+  motor1.alignFinish();
+  motor2.alignFinish();
 
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xPeriod = pdMS_TO_TICKS(2);  // 2 ms = 500 Hz

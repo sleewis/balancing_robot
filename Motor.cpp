@@ -53,8 +53,8 @@ void Motor::begin() {
   ledcAttach(V, PWM_FREQ, PWM_RES);
   ledcAttach(W, PWM_FREQ, PWM_RES);
 
-  // Bepaal de elektrische offset van de rotor
-  alignRotor();
+  // Uitlijning wordt extern aangestuurd via alignStart() + delay + alignFinish()
+  // zodat beide motoren parallel uitgelijnd kunnen worden.
 }
 
 
@@ -223,20 +223,27 @@ void Motor::loop(float voltage) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Rotor-uitlijning bij opstarten
+// Rotor-uitlijning — twee stappen voor parallelle uitvoering
+//
+// Gebruik vanuit de task:
+//   motor1.alignStart();   motor2.alignStart();
+//   delay(2000);           // één gedeelde wachttijd voor beide motoren
+//   motor1.alignFinish();  motor2.alignFinish();
 //
 // De AS5600 meet absolute mechanische positie, maar de elektrische nulhoek
-// (fase A maximaal) is afhankelijk van de montage. alignRotor() bepaalt het
-// verschil (offset) door de rotor naar een bekende elektrische positie te
-// trekken en dan de mechanische hoek te meten.
+// (fase A maximaal) is afhankelijk van de montage. De offset wordt bepaald
+// door de rotor naar elektrische hoek 0 te trekken en de mechanische hoek
+// te meten na het settlen.
 // ─────────────────────────────────────────────────────────────────────────────
-void Motor::alignRotor() {
+
+void Motor::alignStart() {
   Serial.println("[Motor] Rotor-uitlijning starten...");
-
-  // Trek de rotor naar elektrische hoek 0 met een kleine spanning
+  // Trek de rotor naar elektrische hoek 0 — rotor begint nu te bewegen
   setPhaseVoltage(0.0f, ALIGN_VOLTAGE);
-  delay(3000);  // wacht tot de rotor stil staat
+  // Wachttijd zit in de aanroepende task (gedeeld met de andere motor)
+}
 
+void Motor::alignFinish() {
   // Probeer de encoder uit te lezen (max. 10 pogingen)
   bool ok = false;
   for (int i = 0; i < 10 && !ok; i++) {
