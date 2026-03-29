@@ -46,8 +46,10 @@ bool IMU::begin() {
   delay(10);
 
   // Extern kristal inschakelen (hogere nauwkeurigheid)
+  // Na het inschakelen heeft de BNO055 ~650 ms nodig om het kristal te stabiliseren.
+  // Te kort wachten leidt tot foutieve sensor-fusie of een vastgelopen initialisatie.
   writeReg(BNO055_SYS_TRIGGER, 0x80);
-  delay(10);
+  delay(650);
 
   // Zet in IMUPLUS-modus (accel + gyro, geen magnetometer)
   writeReg(BNO055_OPR_MODE, BNO055_MODE_IMUPLUS);

@@ -17,9 +17,10 @@
 // ─── Spanningsnormalisatie ────────────────────────────────────────────────────
 // De PID geeft een voltage-commando in Volt.
 // VOLTAGE_LIMIT is de maximale fasespanning (≈ helft voedingsspanning).
-// Bij 20 V voeding: VOLTAGE_LIMIT = 10 V.
+// 4S LiPo: 13.2 V (leeg) – 16.8 V (vol) → maximale fasespanning ≈ Vbus/2 = 6.6–8.4 V.
+// Conservatief instellen op basis van lage spanning om clipping te voorkomen.
 // Aanpassen als de motor niet genoeg koppel levert of te snel verzadigt.
-#define VOLTAGE_LIMIT   10.0f   // [V]
+#define VOLTAGE_LIMIT   7.0f    // [V]
 
 // ─── Uitlijnspanning bij opstarten ────────────────────────────────────────────
 // Klein genoeg om de rotor zacht te verplaatsen, groot genoeg om aan te trekken.
