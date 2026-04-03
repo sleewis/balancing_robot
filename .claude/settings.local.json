@@ -8,7 +8,8 @@
       "Bash(/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe board:*)",
       "Bash(\"/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe\" board:*)",
       "Bash(\"/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe\" compile:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(curl:*)"
     ]
   }
 }

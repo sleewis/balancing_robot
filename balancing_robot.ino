@@ -58,11 +58,11 @@ IMU imu(&I2C_1);  // BNO055 op I2C_1, adres 0x28
 // Buitenste lus: tilt [°] → gewenste snelheid [rad/s]
 // Uitgangslimieten bepalen de maximale rijsnelheid — niet te hoog instellen!
 PID tiltPID(
-  /*Kp*/  2.0f,    // [rad/s per °]  begin hier
+  /*Kp*/  5.0f,    // [rad/s per °]  verhoogd voor ~2 m/s rijsnelheid
   /*Ki*/  0.0f,
   /*Kd*/  0.05f,
-  /*min*/ -5.0f,   // [rad/s] max achteruit
-  /*max*/  5.0f    // [rad/s] max vooruit
+  /*min*/ -50.0f,  // [rad/s] max achteruit (~2 m/s)
+  /*max*/  50.0f   // [rad/s] max vooruit  (~2 m/s)
 );
 
 // Binnenste lus: snelheidsfout [rad/s] → motorspanning [V]
