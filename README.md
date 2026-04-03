@@ -7,9 +7,10 @@ Dit project implementeert een zelfbalancerende robot op twee wielen met een ESP3
 Doelen van het project:
 
 - Rechtop blijven staan met een tilt controller
-- Twee BLDC-motoren aansturen met magnetische encoders
+- Twee BLDC-motoren aansturen met FOC (Field-Oriented Control)
 - Een IMU gebruiken voor kantelmeting
 - Live PID-tuning mogelijk maken tijdens het testen
+- Rijden op ±2 m/s via Bluetooth XBOX-controller (gepland)
 
 De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en regelalgoritmen onafhankelijk van elkaar verbeterd kunnen worden.
 
@@ -19,7 +20,7 @@ De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en re
 
 De ESP32 draait twee FreeRTOS-tasks:
 
-## Fast Task (Core 0 – 500 Hz)
+## Fast Task (Core 1 – 500 Hz)
 Verantwoordelijk voor real-time regeling.
 
 Uitvoeringsvolgorde per cyclus:
@@ -28,13 +29,13 @@ Uitvoeringsvolgorde per cyclus:
 2. Update IMU (100 Hz, gedecimeerd vanuit de loop)
 3. Voer balanceer-PID uit
 4. Veiligheidscontrole (tilt-limiet en IMU-status)
-5. Stuur motoren aan — motor.loop() handelt encoder- en overstroom-fouten intern af
+5. Stuur motoren aan — motor.loop() voert volledige FOC-keten uit
 6. Schrijf telemetrie terug naar shared state
 7. Wacht op volgende control tick
 
 Deze loop mag nooit blokkeren.
 
-## Slow Task (Core 1 – ~50 Hz)
+## Slow Task (Core 0 – ~50 Hz)
 Behandelt niet-kritische taken:
 
 - Seriële debugging en telemetrie-uitvoer
@@ -61,7 +62,7 @@ MKS-ESP32FOC V2.0 (ESP32-gebaseerd motorstuurboard)
 
 ## Wielen
 
-Diameter 83mm — omtrek ≈ 261mm
+Diameter 83mm — omtrek ≈ 261mm — theoretische topsnelheid bij VOLTAGE_LIMIT: ~3.6 m/s
 
 ## Vermogensmeting
 
@@ -102,20 +103,30 @@ De motorfases worden aangestuurd via ESP32 LEDC PWM-uitgangen (20 kHz, 10-bit re
 Verantwoordelijk voor:
 
 - Uitlezen van de magnetische encoder (AS5600 via I2C)
-- Genereren van sinusvormige three-phase spanning (open-loop FOC basis)
+- Volledige FOC-keten: Clarke → Park → PI-stroomregelaars → inverse Park → inverse Clarke → PWM
 - Rotor-uitlijning bij opstarten
 - Stroommetingen via shunts (EMA-filter + directe piekwaarde)
 - Interne beveiliging tegen encoder-fouten en overstroom
 
+De interface accepteert een **koppelstroom-commando** (`iqTarget` in Ampère). Alle spanning-berekeningen en PWM-generatie verlopen intern.
+
 Belangrijke constanten in `Motor.h`:
 
-| Constante       | Standaard | Omschrijving                                      |
-|-----------------|-----------|---------------------------------------------------|
-| `VOLTAGE_LIMIT` | 7.0 V     | Maximale fasespanning (≈ helft voedingsspanning 4S LiPo) |
-| `ALIGN_VOLTAGE` | 3.0 V     | Spanning tijdens rotor-uitlijning bij opstarten   |
-| `MAX_CURRENT_A` | 6.0 A     | Totale fasestroom waarbij motor wordt uitgeschakeld |
+| Constante       | Standaard  | Omschrijving                                           |
+|-----------------|------------|--------------------------------------------------------|
+| `VOLTAGE_LIMIT` | 7.0 V      | Maximale fasespanning (≈ helft voedingsspanning 4S LiPo) |
+| `ALIGN_VOLTAGE` | 3.0 V      | Spanning tijdens rotor-uitlijning bij opstarten        |
+| `MAX_CURRENT_A` | 6.0 A      | Totale fasestroom waarbij motor wordt uitgeschakeld    |
+| `FOC_KP`        | 0.5 V/A    | Proportionele gain van de dq-stroomregelaars           |
+| `FOC_KI`        | 50 V/(A·s) | Integrerende gain van de dq-stroomregelaars            |
+| `FOC_INT_MAX`   | 6.0 V      | Anti-windup limiet voor de FOC-integratoren            |
 
-De PID-uitgang (in Volt) wordt door `VOLTAGE_LIMIT` gedeeld om te normaliseren naar het PWM-bereik. Pas `VOLTAGE_LIMIT` aan als de motor niet genoeg koppel levert of juist te snel verzadigt.
+### FOC afstellen
+
+- Begin met kleine `FOC_KP` (bijv. 0.3) en verhoog tot de stroom snel en stabiel het setpoint volgt.
+- Verhoog `FOC_KI` om de statische fout naar nul te brengen.
+- Als de stroom oscilleert: verlaag `FOC_KP` of `FOC_KI`.
+- Controleer via de seriële monitor of `Id ≈ 0` — een afwijkende Id wijst op een verkeerde encoderoffset.
 
 ### Foutafhandeling
 
@@ -144,45 +155,58 @@ Generieke PID-implementatie met:
 
 Centrale structure voor gegevensuitwisseling tussen de twee cores via een mutex.
 
-| Veld           | Richting       | Omschrijving                        |
-|----------------|----------------|-------------------------------------|
-| `targetTilt`   | slow → fast    | Gewenste kanteling [°]              |
-| `currentTilt`  | fast → slow    | Gemeten kanteling [°]               |
-| `pidOutput`    | fast → slow    | Laatste PID-uitgang [V]             |
-| `avgCurrent1`  | fast → slow    | Gefilterde stroom motor 1 [A]       |
-| `avgCurrent2`  | fast → slow    | Gefilterde stroom motor 2 [A]       |
-| `motor1Ok`     | fast → slow    | False bij encoder-fout of overstroom |
-| `motor2Ok`     | fast → slow    | False bij encoder-fout of overstroom |
+| Veld           | Richting       | Omschrijving                              |
+|----------------|----------------|-------------------------------------------|
+| `targetTilt`   | slow → fast    | Gewenste kanteling [°]                    |
+| `currentTilt`  | fast → slow    | Gemeten kanteling [°]                     |
+| `pidOutput`    | fast → slow    | Laatste velocity PID-uitgang [A] (iqTarget) |
+| `avgCurrent1`  | fast → slow    | Gefilterde stroom motor 1 [A]             |
+| `avgCurrent2`  | fast → slow    | Gefilterde stroom motor 2 [A]             |
+| `motor1Ok`     | fast → slow    | False bij encoder-fout of overstroom      |
+| `motor2Ok`     | fast → slow    | False bij encoder-fout of overstroom      |
 
 ---
 
 # Regelstrategie
 
-De robot gebruikt een **cascade regelaar** met twee geneste PID-lussen:
+De robot gebruikt een **cascade regelaar** met drie geneste lussen:
 
 ```
-Tilt PID → gewenste wielsnelheid [rad/s] → Velocity PID → motorspanning [V]
+Tilt PID → gewenste wielsnelheid [rad/s] → Velocity PID → iqTarget [A] → FOC → PWM
 ```
 
 **Buitenste lus — Tilt PID (500 Hz):**
 
 ```
-fout = gemeten kanteling [°] − gewenste kanteling [°]
-uitgang = gewenste wielsnelheid [rad/s]
+fout    = gemeten kanteling [°] − gewenste kanteling [°]
+uitgang = gewenste wielsnelheid [rad/s]  (begrensd op ±50 rad/s ≈ ±2 m/s)
 ```
 
 Bij een positieve kanteling (voorover) stuurt de tilt PID een positieve doelsnelheid. De wielen rijden vooruit en lopen zo de massa achterop — de robot trekt zichzelf rechtop.
 
-**Binnenste lus — Velocity PID (500 Hz):**
+**Middelste lus — Velocity PID (500 Hz):**
 
 ```
-fout = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
-uitgang = motorspanning [V]
+fout    = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
+uitgang = gewenste koppelstroom iqTarget [A]
 ```
 
 De gemeten snelheid is het gemiddelde van beide motoren, gecorrigeerd voor de gespiegelde montage van motor 2.
 
-Het voordeel ten opzichte van directe spanningsregeling: de binnenste lus corrigeert automatisch voor slippen, belastingwisselingen en andere verstoringen. De buitenste lus hoeft alleen de kanteling bij te sturen.
+**Binnenste lus — FOC stroomregelaar (500 Hz, intern in Motor.loop):**
+
+```
+Ia, Ib meten  →  Ic = −Ia − Ib  (Kirchhoff)
+Clarke-transform:  (Ia, Ib, Ic) → (Iα, Iβ)   stilstaand tweeassig stelsel
+Park-transform:    (Iα, Iβ, θ)  → (Id, Iq)   roterend stelsel (met rotor mee)
+PI op Id (target = 0 A)   → Vd              onderdrukt magnetiseerstroom
+PI op Iq (target = iqTarget) → Vq           regelt koppel direct
+Inverse Park:  (Vd, Vq) → (Vα, Vβ)
+Inverse Clarke: (Vα, Vβ) → (Va, Vb, Vc) → PWM
+```
+
+**Voordeel van FOC ten opzichte van open-loop spanning:**
+Bij hogere snelheden bouwt de motor back-EMF op, waardoor een vaste spanning minder koppel levert. FOC compenseert dit automatisch: voor dezelfde `iqTarget` blijft het geleverde koppel constant, ongeacht de snelheid.
 
 ---
 
@@ -191,7 +215,7 @@ Het voordeel ten opzichte van directe spanningsregeling: de binnenste lus corrig
 Er zijn drie lagen van beveiliging:
 
 **1. Tilt-limiet (fast task)**
-De PID-uitgang wordt op nul gezet en de integrator gereset als de kanteling groter is dan `TILT_LIMIT_DEG` (standaard 30°) of als de IMU niet gereed is.
+De PID-uitgang wordt op nul gezet en de integratoren gereset als de kanteling groter is dan `TILT_LIMIT_DEG` (standaard 30°) of als de IMU niet gereed is.
 
 **2. Encoder-beveiliging (Motor class)**
 Bij elke loop-cyclus wordt de I2C-transactie gecontroleerd. Reageert de AS5600 niet, dan wordt de motor via `brake()` gestopt en `_encoderOk = false` gezet.
@@ -199,7 +223,7 @@ Bij elke loop-cyclus wordt de I2C-transactie gecontroleerd. Reageert de AS5600 n
 **3. Overstroom-beveiliging (Motor class)**
 De directe piekstroom (`peakI`) wordt elke cyclus berekend. Overschrijdt deze `MAX_CURRENT_A`, dan wordt de motor gestopt en een melding gestuurd via serieel.
 
-De PID-integrator wordt gereset bij elke veiligheidsuitschakeling om wind-up te voorkomen.
+Bij elke noodstop worden zowel de PID-integratoren als de FOC-integratoren gereset om wind-up te voorkomen.
 
 ---
 
@@ -208,8 +232,16 @@ De PID-integrator wordt gereset bij elke veiligheidsuitschakeling om wind-up te 
 De slow task geeft elke 20 ms de volgende uitvoer:
 
 ```
-[slow] tilt=  2.14°  pid= 3.210V  I1= 0.84A  I2= 0.81A  M1=OK  M2=OK
+[slow] tilt=  2.14°  vel= 0.12→ 0.43 rad/s  iq= 0.312A  I1= 0.84A  I2= 0.81A  M1=OK  M2=OK
 ```
+
+| Veld   | Eenheid | Omschrijving                                      |
+|--------|---------|---------------------------------------------------|
+| tilt   | °       | Gemeten kanteling                                 |
+| vel    | rad/s   | Gemeten → gewenste wielsnelheid                   |
+| iq     | A       | Koppelstroom-commando (uitgang velocity PID)      |
+| I1/I2  | A       | Gefilterde totale fasestroom per motor            |
+| M1/M2  |         | Motorstatus (OK / FOUT)                           |
 
 ---
 
@@ -220,64 +252,45 @@ PID-gains kunnen live worden aangepast via de seriële monitor zonder opnieuw te
 **Tilt PID** (buitenste lus):
 
 ```
-p2.0    → tilt Kp instellen
+p5.0    → tilt Kp instellen
 i0.0    → tilt Ki instellen
 d0.05   → tilt Kd instellen
 t3.0    → target tilt handmatig instellen [°]
 ```
 
-**Velocity PID** (binnenste lus):
+**Velocity PID** (middelste lus — uitgang in Ampère):
 
 ```
-vp0.5   → velocity Kp instellen
-vi0.2   → velocity Ki instellen
+vp0.1   → velocity Kp instellen  [A/(rad/s)]
+vi0.05  → velocity Ki instellen  [A/rad]
 vd0.0   → velocity Kd instellen
 ```
 
 Aanbevolen volgorde:
 
-1. Stem eerst de **velocity PID** af: zet tilt PID gains op 0, geef `t0` en controleer of de wielen stilhouden bij verstoring. Stem `vp` en `vi` af.
-2. Zet daarna `p` (tilt Kp) op een kleine waarde (bijv. 0.5) en verhoog tot de robot reageert op kanteling.
-3. Voeg `d` (tilt Kd) toe om oscillaties te dempen.
-4. Voeg `i` (tilt Ki) als laatste toe als de robot langzaam wegdrijft.
-
-De seriële monitor toont elke 20 ms:
-
-```
-[slow] tilt=  2.14°  vel= 0.12→ 0.43 rad/s  out= 3.210V  I1= 0.84A  I2= 0.81A  M1=OK  M2=OK
-```
+1. Stem eerst de **FOC-gains** af (`FOC_KP`, `FOC_KI` in Motor.h): controleer via serieel of `Id ≈ 0` en `Iq` het setpoint snel volgt.
+2. Stem daarna de **velocity PID** af: zet tilt PID gains op 0, geef `t0` en controleer of de wielen stilhouden bij verstoring. Stem `vp` en `vi` af.
+3. Zet daarna `p` (tilt Kp) op een kleine waarde (bijv. 0.5) en verhoog tot de robot reageert op kanteling.
+4. Voeg `d` (tilt Kd) toe om oscillaties te dempen.
+5. Voeg `i` (tilt Ki) als laatste toe als de robot langzaam wegdrijft.
 
 ---
 
 # Toekomstige verbeteringen
 
-## Motoraansturing
-
-### 1. Field-Oriented Control (FOC) — gesloten stroom-regelaar
-
-De motordriver genereert al sinusvormige fasespanningen op basis van de encoder-hoek — dit is de open-loop basis van FOC. De stroommetingen worden momenteel alleen gebruikt voor overstroom-beveiliging, niet voor regeling.
-
-De volgende stap is een **gesloten stroom-regelaar**:
-
-- Clarke transform (fasestroom → αβ)
-- Park transform (αβ → dq, veld-uitgelijnd)
-- PI stroomregelaars op de d- en q-as
-- Inverse Park + Space Vector Modulation
-
-De hardware meet al fasestroom via de shunts en de infrastructuur in de code is aanwezig — de waarden zijn beschikbaar via `motor.getAvgCurrent()`.
-
-Voordelen: koppelregeling in plaats van spanningsregeling, hogere efficiëntie, soepelere respons bij lage snelheden.
-
 ## Sensorverbeteringen
 
 De BNO055 levert gefuseerde Euler-hoeken die enige vertraging kunnen introduceren. Mogelijke verbetering: ruwe gyro + accelerometer fusie met een complementair filter of Kalman filter voor lagere latency.
+
+## Vermogensmeting
+
+De Adafruit INA228 is aangesloten maar nog niet in de code opgenomen. Toekomstig gebruik: batterijspanning bewaken en VOLTAGE_LIMIT dynamisch aanpassen aan de laadtoestand.
 
 ---
 
 # Geplande functies
 
 - Bluetooth controller-invoer (XBOX)
-- Snelheidsregeling
 - Stuurregeling
 - Telemetrie streaming
 - Autonome stabilisatiemodi
@@ -286,6 +299,13 @@ De BNO055 levert gefuseerde Euler-hoeken die enige vertraging kunnen introducere
 
 # Projectstatus
 
-Vroeg prototype.
+Actief in ontwikkeling.
 
-Kernarchitectuur, dual-core regellus, motoraansturing met foutafhandeling en cascade regelaar (tilt PID → velocity PID) zijn geïmplementeerd. Momenteel gericht op het afstellen van de PID-gains voor stabiel balanceren.
+Geïmplementeerd:
+- Dual-core FreeRTOS architectuur (500 Hz fast task, 50 Hz slow task)
+- Cascade regelaar: tilt PID → velocity PID → FOC stroomregelaar
+- Gesloten-lus FOC met Clarke/Park-transforms en dq-PI-regelaars
+- Encoder-foutafhandeling en overstroom-beveiliging
+- Live PID-tuning via seriële monitor
+
+Huidige focus: afstellen van FOC-gains en PID-cascade voor stabiel balanceren.
