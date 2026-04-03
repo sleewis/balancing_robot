@@ -51,6 +51,22 @@ Communicatie tussen de tasks verloopt via een mutex-beschermde shared structure.
 
 MKS-ESP32FOC V2.0 (ESP32-gebaseerd motorstuurboard)
 
+## Voeding
+
+4S LiPo — 14.8V nominaal (13.2V–16.8V), 1300mAh
+
+## Motoren
+
+2× GM4108H-120T BLDC gimbal motor, 11 poolparen
+
+## Wielen
+
+Diameter 83mm — omtrek ≈ 261mm
+
+## Vermogensmeting
+
+Adafruit INA228 (I²C 0x40, 85V/20-bit) — batterijspanning en stroomverbruik bewaking. Nog niet in code geïmplementeerd.
+
 ## Sensoren
 
 ### IMU
@@ -73,7 +89,7 @@ Elke motor heeft zijn eigen I2C-bus om adresconflicten te voorkomen.
 
 ## Motoren
 
-Twee BLDC-motoren met three-phase drivers.
+GM4108H-120T BLDC gimbal motoren (11 poolparen), two-phase drivers.
 
 De motorfases worden aangestuurd via ESP32 LEDC PWM-uitgangen (20 kHz, 10-bit resolutie).
 
@@ -95,7 +111,7 @@ Belangrijke constanten in `Motor.h`:
 
 | Constante       | Standaard | Omschrijving                                      |
 |-----------------|-----------|---------------------------------------------------|
-| `VOLTAGE_LIMIT` | 10.0 V    | Maximale fasespanning (≈ helft voedingsspanning)  |
+| `VOLTAGE_LIMIT` | 7.0 V     | Maximale fasespanning (≈ helft voedingsspanning 4S LiPo) |
 | `ALIGN_VOLTAGE` | 3.0 V     | Spanning tijdens rotor-uitlijning bij opstarten   |
 | `MAX_CURRENT_A` | 6.0 A     | Totale fasestroom waarbij motor wordt uitgeschakeld |
 

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arduino-cli version:*)",
+      "Bash(where arduino-cli:*)",
+      "Read(//c/Users/sleew/**)",
+      "Bash(/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe version:*)",
+      "Bash(/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe board:*)",
+      "Bash(\"/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe\" board:*)",
+      "Bash(\"/c/Users/sleew/OneDrive/Documenten/Arduino/arduino-cli.exe\" compile:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
