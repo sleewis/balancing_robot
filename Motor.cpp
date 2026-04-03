@@ -16,24 +16,25 @@ Motor::Motor(int u, int v, int w, int en,
   wire      = wbus;
   polePairs = poles;
 
-  // Encoder & positie
   rawAngle      = 0;
   lastMechAngle = 0.0f;
   prevMechAngle = 0.0f;
   offset        = 0.0f;
+  _velocity     = 0.0f;
 
-  // Snelheid
-  _velocity = 0.0f;
-
-  // Stroommetingen
   avgIa = avgIb = avgIc = avgI = peakI = 0.0f;
+
+  // FOC toestandsvariabelen beginnen op nul
+  _id          = 0.0f;
+  _iq          = 0.0f;
+  _id_integral = 0.0f;
+  _iq_integral = 0.0f;
 
   // Shunt-versterker van de MKS-ESP32FOC V2.0
   shunt  = 0.01f;    // 10 mΩ shuntweerstand
   gain   = 50.0f;    // opamp-versterking
   adcMid = 1845.0f;  // ADC-waarde bij nulstroom (ijken indien nodig)
 
-  // Foutstatus
   _encoderOk   = false;
   _overcurrent = false;
 }
@@ -43,18 +44,12 @@ Motor::Motor(int u, int v, int w, int en,
 // Initialisatie
 // ─────────────────────────────────────────────────────────────────────────────
 void Motor::begin() {
-  // Enable-pin: HIGH = motordriver actief
   pinMode(EN, OUTPUT);
   digitalWrite(EN, HIGH);
 
-  // Koppel de drie PWM-kanalen aan de fasen
-  // LEDC op de ESP32 genereert hardware-PWM zonder CPU-overhead
   ledcAttach(U, PWM_FREQ, PWM_RES);
   ledcAttach(V, PWM_FREQ, PWM_RES);
   ledcAttach(W, PWM_FREQ, PWM_RES);
-
-  // Uitlijning wordt extern aangestuurd via alignStart() + delay + alignFinish()
-  // zodat beide motoren parallel uitgelijnd kunnen worden.
 }
 
 
@@ -62,103 +57,72 @@ void Motor::begin() {
 // Encoder uitlezen (AS5600 via I2C)
 // ─────────────────────────────────────────────────────────────────────────────
 bool Motor::readSensor() {
-  // Stuur leescommando naar het hoekregister (0x0C = RAW ANGLE hoog-byte)
   wire->beginTransmission(AS5600_ADDR);
   wire->write(0x0C);
-  if (wire->endTransmission(false) != 0) {
-    // I2C-busfout: apparaat reageert niet
-    return false;
-  }
-
-  // Vraag 2 bytes op (hoog- en laagbyte van het 12-bit hoekregister)
-  if (wire->requestFrom(AS5600_ADDR, (uint8_t)2) != 2) {
-    // Onverwacht aantal bytes ontvangen
-    return false;
-  }
+  if (wire->endTransmission(false) != 0) return false;
+  if (wire->requestFrom(AS5600_ADDR, (uint8_t)2) != 2) return false;
 
   uint16_t high = wire->read();
   uint16_t low  = wire->read();
-
-  // Combineer tot 12-bit waarde (0–4095 = 0–360°)
   rawAngle = ((high << 8) | low) & 0x0FFF;
   return true;
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stroommetingen
+// Stroomsensor uitlezen
 // ─────────────────────────────────────────────────────────────────────────────
 float Motor::readCurrent(int pin) {
-  // Lees ADC en bereken spanning ten opzichte van het nulpunt
   int   raw     = analogRead(pin);
   float voltage = (raw - adcMid) * (3.3f / 4095.0f);
-
   // V = I × R_shunt × gain  →  I = V / (R_shunt × gain)
   return voltage / (shunt * gain);
 }
 
-void Motor::updateCurrent() {
-  float Ia = readCurrent(IA_PIN);
-  float Ib = readCurrent(IB_PIN);
-
-  // Fase C wordt niet gemeten: volgt uit Kirchhoff (Ia + Ib + Ic = 0)
-  float Ic = -Ia - Ib;
-
-  // EMA-filter per fase — tijdconstante ≈ (1/0.1) × 2 ms = 20 ms
-  // Gebruikt voor energiebewaking en langzame overstroom-detectie
-  avgIa = 0.9f * avgIa + 0.1f * fabsf(Ia);
-  avgIb = 0.9f * avgIb + 0.1f * fabsf(Ib);
-  avgIc = 0.9f * avgIc + 0.1f * fabsf(Ic);
-  avgI  = avgIa + avgIb + avgIc;
-
-  // Directe piekstroom voor snelle overstroom-detectie (geen filtering)
-  peakI = fabsf(Ia) + fabsf(Ib) + fabsf(Ic);
-}
-
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Noodstop: alle fases naar 50% duty cycle = nulspanning, motor vrij draaiend
+// Noodstop
+// Alle fases naar 50% duty cycle = nulspanning, motor vrij draaiend.
+// FOC-integratoren worden ook gereset om wind-up bij herstart te voorkomen.
 // ─────────────────────────────────────────────────────────────────────────────
 void Motor::brake() {
   int mid = PWM_MAX / 2;
   ledcWrite(U, mid);
   ledcWrite(V, mid);
   ledcWrite(W, mid);
+
+  // Reset FOC-integratoren zodat er bij herstart geen opgebouwde spanning is
+  _id_integral = 0.0f;
+  _iq_integral = 0.0f;
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sinusvormige three-phase spanning genereren (open-loop FOC basis)
+// αβ-spanning naar driefasige PWM (inverse Clarke + PWM-mapping)
 //
-// Principe:
-//   De drie fasen krijgen sinusvormige spanningen met 120° faseverschil.
-//   De amplitude wordt bepaald door 'voltage', genormaliseerd via VOLTAGE_LIMIT.
-//   Het PWM-bereik 0–PWM_MAX stelt de spanning in van 0 V tot voedingsspanning.
-//   De sinus wordt verschoven naar het bereik [0, 1] vóór omzetting naar PWM.
+// Dit is de laatste stap van de FOC-keten:
 //
-//   PWM = (sin(hoek) × norm × 0.5 + 0.5) × PWM_MAX
+//   (Vα, Vβ)  →  inverse Clarke  →  (Va, Vb, Vc)  →  PWM
 //
-// angle   : elektrische rotor-hoek [rad]
-// voltage : gewenste spanning [V], bereik [-VOLTAGE_LIMIT, +VOLTAGE_LIMIT]
+// Inverse Clarke-formules (amplitude-invariant):
+//   Va =  Vα
+//   Vb = -Vα/2 + Vβ × √3/2
+//   Vc = -Vα/2 - Vβ × √3/2
+//
+// De driefasspanningen liggen in het bereik [-VOLTAGE_LIMIT, +VOLTAGE_LIMIT].
+// Ze worden verschoven naar [0, 1] en geschaald naar PWM-resolutie:
+//   pwm = (V / VOLTAGE_LIMIT × 0.5 + 0.5) × PWM_MAX
 // ─────────────────────────────────────────────────────────────────────────────
-void Motor::setPhaseVoltage(float angle, float voltage) {
-  // Normaliseer spanning naar [-1, 1] op basis van de ingestelde spanning-limiet
-  float norm = constrain(voltage / VOLTAGE_LIMIT, -1.0f, 1.0f);
+void Motor::applyVoltageAlphaBeta(float valpha, float vbeta) {
+  // Inverse Clarke: van het tweeassige αβ-stelsel terug naar drie fasen
+  float Va =  valpha;
+  float Vb = -0.5f * valpha + 0.8660254f * vbeta;  // 0.866 = √3/2
+  float Vc = -0.5f * valpha - 0.8660254f * vbeta;
 
-  // Bereken sinusvormige spanning per fase (120° = 2π/3 rad faseverschil)
-  float a = sinf(angle)               * norm;
-  float b = sinf(angle - 2.0943951f)  * norm;  // fase B: -120°
-  float c = sinf(angle - 4.1887902f)  * norm;  // fase C: -240°
-
-  // Verschuif van [-1, 1] naar [0, 1] en schaal naar PWM-resolutie
-  int pwmA = (int)((a * 0.5f + 0.5f) * PWM_MAX);
-  int pwmB = (int)((b * 0.5f + 0.5f) * PWM_MAX);
-  int pwmC = (int)((c * 0.5f + 0.5f) * PWM_MAX);
-
-  // Begrens om clipping door afrondingsfouten te voorkomen
-  pwmA = constrain(pwmA, 0, PWM_MAX);
-  pwmB = constrain(pwmB, 0, PWM_MAX);
-  pwmC = constrain(pwmC, 0, PWM_MAX);
+  // Normaliseer en converteer naar PWM-waarden
+  int pwmA = (int)constrain((Va / VOLTAGE_LIMIT * 0.5f + 0.5f) * PWM_MAX, 0, PWM_MAX);
+  int pwmB = (int)constrain((Vb / VOLTAGE_LIMIT * 0.5f + 0.5f) * PWM_MAX, 0, PWM_MAX);
+  int pwmC = (int)constrain((Vc / VOLTAGE_LIMIT * 0.5f + 0.5f) * PWM_MAX, 0, PWM_MAX);
 
   ledcWrite(U, pwmA);
   ledcWrite(V, pwmB);
@@ -167,41 +131,64 @@ void Motor::setPhaseVoltage(float angle, float voltage) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hoofd-regellus — aanroepen op vaste tijdstap (bijv. 500 Hz)
+// Hoofd-regellus — Field-Oriented Control (gesloten lus)
+//
+// Wordt aangeroepen op 500 Hz. Voert de volledige FOC-keten uit:
+//
+//   1. Encoder uitlezen → mechanische hoek θ_mech [rad]
+//   2. Hoeksnelheid berekenen [rad/s]
+//   3. Fasestromen meten: Ia, Ib  (Ic = -Ia - Ib via Kirchhoff)
+//   4. Clarke-transform: (Ia, Ib, Ic) → (Iα, Iβ)
+//      Converteert van het driefasige stelsel naar een stilstaand tweeassig stelsel.
+//   5. Park-transform: (Iα, Iβ, θ_elec) → (Id, Iq)
+//      Converteert naar een roterend stelsel dat met de rotor meedraait.
+//      Id = magnetiserende stroom (moet 0 zijn)
+//      Iq = koppelstroom (dit is wat we regelen)
+//   6. PI-regelaar op Id (target = 0 A) → Vd
+//   7. PI-regelaar op Iq (target = iqTarget) → Vq
+//   8. Inverse Park: (Vd, Vq, θ_elec) → (Vα, Vβ)
+//   9. Inverse Clarke + PWM: (Vα, Vβ) → (Va, Vb, Vc) → ledcWrite
+//
+// iqTarget: gewenste koppelstroom [A], positief = vooruit
 // ─────────────────────────────────────────────────────────────────────────────
-void Motor::loop(float voltage) {
+void Motor::loop(float iqTarget) {
+
   // ── Stap 1: encoder uitlezen ─────────────────────────────────────────────
   if (!readSensor()) {
-    // Encoder niet bereikbaar: motor veilig stoppen en fout registreren
     _encoderOk = false;
     brake();
     return;
   }
   _encoderOk = true;
 
-  // Converteer ruwe encoder-waarde (0–4095) naar mechanische hoek [rad]
+  // Converteer ruwe encoderwaarde (0–4095) naar mechanische hoek [0, 2π]
   lastMechAngle = rawAngle * (TWO_PI / 4096.0f);
 
-  // ── Stap 1b: hoeksnelheid berekenen ──────────────────────────────────────
-  // Differenteer de mechanische hoek over de vaste tijdstap MOTOR_DT.
-  // De hoek loopt van 0 tot 2π en wrapat terug naar 0, dus corrigeren we
-  // voor de overgang (bijv. van 6.2 naar 0.1 rad is geen grote sprong).
+  // ── Stap 2: hoeksnelheid berekenen ───────────────────────────────────────
   float delta = lastMechAngle - prevMechAngle;
-  if      (delta >  PI) delta -= TWO_PI;   // wrap van 2π → 0
-  else if (delta < -PI) delta += TWO_PI;   // wrap van 0 → 2π
+  // Corrigeer voor de overgang van 2π → 0 (wrap-around van de encoder)
+  if      (delta >  PI) delta -= TWO_PI;
+  else if (delta < -PI) delta += TWO_PI;
 
   float rawVelocity = delta / MOTOR_DT;
-
-  // Low-pass filter: dempt ruis zonder de respons te traag te maken
   _velocity = VELOCITY_ALPHA * _velocity + (1.0f - VELOCITY_ALPHA) * rawVelocity;
-
   prevMechAngle = lastMechAngle;
 
-  // ── Stap 2: stroommetingen bijwerken & overstroom controleren ────────────
-  updateCurrent();
+  // ── Stap 3: fasestromen meten ────────────────────────────────────────────
+  // Fase A en B worden direct gemeten via de shunt-versterkers.
+  // Fase C volgt uit de wet van Kirchhoff: Ia + Ib + Ic = 0.
+  float Ia = readCurrent(IA_PIN);
+  float Ib = readCurrent(IB_PIN);
+  float Ic = -Ia - Ib;
+
+  // Update EMA-filters voor telemetrie en overstroom-detectie
+  avgIa = 0.9f * avgIa + 0.1f * fabsf(Ia);
+  avgIb = 0.9f * avgIb + 0.1f * fabsf(Ib);
+  avgIc = 0.9f * avgIc + 0.1f * fabsf(Ic);
+  avgI  = avgIa + avgIb + avgIc;
+  peakI = fabsf(Ia) + fabsf(Ib) + fabsf(Ic);
 
   if (peakI > MAX_CURRENT_A) {
-    // Directe piekstroom overschrijdt limiet: motor direct stoppen
     _overcurrent = true;
     brake();
     Serial.printf("[Motor] OVERSTROOM: %.2f A (limiet: %.1f A)\n",
@@ -210,41 +197,112 @@ void Motor::loop(float voltage) {
   }
   _overcurrent = false;
 
-  // ── Stap 3: elektrische hoek berekenen ───────────────────────────────────
-  // De elektrische hoek loopt polePairs maal sneller dan de mechanische hoek.
-  // + PI/2 corrigeert de faseverschuiving van de sinusvormige aansturing:
-  // zonder deze correctie zou de motor koppel leveren in plaats van positie-
-  // houdende spanning (de magnetische veldvector staat dan loodrecht op de rotor).
-  float elec = lastMechAngle * polePairs + offset + HALF_PI;
+  // ── Stap 4: Clarke-transform ─────────────────────────────────────────────
+  //
+  // Converteert de driefasige stroom (Ia, Ib, Ic) naar een tweeassig
+  // stilstaand stelsel (Iα, Iβ). Dit maakt de wiskundige verwerking eenvoudiger.
+  //
+  // Formules (amplitude-invariant):
+  //   Iα = Ia
+  //   Iβ = (Ia + 2·Ib) / √3
+  //
+  // Visueel: stel je voor dat Ia langs de α-as valt, dan geeft de β-as de
+  // component loodrecht daarop. Het resultaat is een roterende vector in het
+  // αβ-vlak die synchroon met de rotor draait.
+  //
+  float Ialpha = Ia;
+  float Ibeta  = (Ia + 2.0f * Ib) * 0.5773503f;  // 1/√3 = 0.5774
 
-  // ── Stap 4: fasespanningen instellen ─────────────────────────────────────
-  setPhaseVoltage(elec, voltage);
+  // ── Stap 5: Park-transform ───────────────────────────────────────────────
+  //
+  // Converteert de roterende αβ-vector naar een stilstaand (d,q)-stelsel
+  // door te roteren met de elektrische hoek van de rotor.
+  //
+  // Na deze transformatie zijn Id en Iq constante gelijkstromen (DC) als
+  // de motor in steady-state draait — dit maakt PID-regeling eenvoudig.
+  //
+  // Formules:
+  //   Id =  Iα·cos(θ) + Iβ·sin(θ)
+  //   Iq = -Iα·sin(θ) + Iβ·cos(θ)
+  //
+  // θ = elektrische hoek van de rotor-fluxas.
+  // Let op: GEEN HALF_PI hier — die correctie was nodig voor open-loop
+  // (om spanning 90° voor de rotor te zetten), maar bij FOC handelen de
+  // PI-regelaars dit automatisch af via de Vq-uitgang.
+  //
+  float theta = lastMechAngle * polePairs + offset;
+  float cosT  = cosf(theta);
+  float sinT  = sinf(theta);
+
+  _id =  Ialpha * cosT + Ibeta * sinT;
+  _iq = -Ialpha * sinT + Ibeta * cosT;
+
+  // ── Stap 6: PI-regelaar op Id (target = 0 A) ─────────────────────────────
+  //
+  // De d-as stroom (magnetiserende stroom) moet nul zijn voor maximaal
+  // koppel per ampère. Een afwijking van nul betekent dat er onnodig energie
+  // in het magnetisch veld wordt gestopt in plaats van in koppel.
+  //
+  // Anti-windup: de integraal wordt bijgeknipt zodat de bijdrage (Ki × integraal)
+  // nooit groter wordt dan FOC_INT_MAX Volt.
+  //
+  float id_error    = 0.0f - _id;
+  _id_integral     += id_error * MOTOR_DT;
+  _id_integral      = constrain(_id_integral,
+                                -FOC_INT_MAX / FOC_KI,
+                                 FOC_INT_MAX / FOC_KI);
+  float Vd = FOC_KP * id_error + FOC_KI * _id_integral;
+  Vd = constrain(Vd, -VOLTAGE_LIMIT, VOLTAGE_LIMIT);
+
+  // ── Stap 7: PI-regelaar op Iq (target = iqTarget) ───────────────────────
+  //
+  // De q-as stroom (koppelstroom) is het eigenlijke stuurcommando.
+  // Door Iq te regelen sturen we direct het koppel van de motor,
+  // onafhankelijk van de snelheid of belasting.
+  //
+  // Dit is het grote voordeel ten opzichte van open-loop spanning-aansturing:
+  //   - Bij open-loop verandert het koppel met de snelheid (back-EMF neemt toe)
+  //   - Bij FOC regelen we direct de stroom → koppel blijft constant voor
+  //     dezelfde iqTarget, ook bij hogere snelheden
+  //
+  float iq_error    = iqTarget - _iq;
+  _iq_integral     += iq_error * MOTOR_DT;
+  _iq_integral      = constrain(_iq_integral,
+                                -FOC_INT_MAX / FOC_KI,
+                                 FOC_INT_MAX / FOC_KI);
+  float Vq = FOC_KP * iq_error + FOC_KI * _iq_integral;
+  Vq = constrain(Vq, -VOLTAGE_LIMIT, VOLTAGE_LIMIT);
+
+  // ── Stap 8: inverse Park-transform ──────────────────────────────────────
+  //
+  // Converteert (Vd, Vq) terug van het roterende dq-stelsel naar het
+  // stilstaande αβ-stelsel. Dit is de omgekeerde rotatie van stap 5.
+  //
+  // Formules:
+  //   Vα = Vd·cos(θ) - Vq·sin(θ)
+  //   Vβ = Vd·sin(θ) + Vq·cos(θ)
+  //
+  float Valpha = Vd * cosT - Vq * sinT;
+  float Vbeta  = Vd * sinT + Vq * cosT;
+
+  // ── Stap 9: inverse Clarke + PWM ─────────────────────────────────────────
+  // (zie applyVoltageAlphaBeta hieronder voor de uitleg)
+  applyVoltageAlphaBeta(Valpha, Vbeta);
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rotor-uitlijning — twee stappen voor parallelle uitvoering
-//
-// Gebruik vanuit de task:
-//   motor1.alignStart();   motor2.alignStart();
-//   delay(2000);           // één gedeelde wachttijd voor beide motoren
-//   motor1.alignFinish();  motor2.alignFinish();
-//
-// De AS5600 meet absolute mechanische positie, maar de elektrische nulhoek
-// (fase A maximaal) is afhankelijk van de montage. De offset wordt bepaald
-// door de rotor naar elektrische hoek 0 te trekken en de mechanische hoek
-// te meten na het settlen.
 // ─────────────────────────────────────────────────────────────────────────────
-
 void Motor::alignStart() {
   Serial.println("[Motor] Rotor-uitlijning starten...");
-  // Trek de rotor naar elektrische hoek 0 — rotor begint nu te bewegen
-  setPhaseVoltage(0.0f, ALIGN_VOLTAGE);
-  // Wachttijd zit in de aanroepende task (gedeeld met de andere motor)
+  // Trek de rotor naar elektrische hoek 0 door direct de fasespanning in te
+  // stellen via de sinusvormige methode (hier gebruiken we α-β direct).
+  // Vα = ALIGN_VOLTAGE, Vβ = 0 → trekt rotor naar d-as positie 0.
+  applyVoltageAlphaBeta(ALIGN_VOLTAGE, 0.0f);
 }
 
 void Motor::alignFinish() {
-  // Probeer de encoder uit te lezen (max. 10 pogingen)
   bool ok = false;
   for (int i = 0; i < 10 && !ok; i++) {
     ok = readSensor();
@@ -258,18 +316,18 @@ void Motor::alignFinish() {
     return;
   }
 
-  // Bereken de offset: verschil tussen de aangestuurde elektrische hoek (0)
-  // en de gemeten mechanische positie × polePairs
+  // Bereken de offset: de elektrische hoek die overeenkomt met de meetpositie
+  // is 0 (we hebben de rotor daarheen getrokken), dus:
+  // offset = 0 - mech * polePairs
   float mech = rawAngle * (TWO_PI / 4096.0f);
   offset = 0.0f - mech * polePairs;
 
-  // Initialiseer prevMechAngle zodat de eerste snelheidsmeting nul oplevert
   lastMechAngle = mech;
   prevMechAngle = mech;
   _velocity     = 0.0f;
 
   _encoderOk = true;
-  brake();  // spanning weg na uitlijning
+  brake();
 
   Serial.printf("[Motor] Uitlijning klaar. Offset: %.4f rad\n", offset);
 }

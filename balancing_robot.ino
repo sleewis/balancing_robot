@@ -65,14 +65,21 @@ PID tiltPID(
   /*max*/  50.0f   // [rad/s] max vooruit  (~2 m/s)
 );
 
-// Binnenste lus: snelheidsfout [rad/s] → motorspanning [V]
-// Stem deze PID eerst af voordat je de tilt PID aanzet.
+// Binnenste lus: snelheidsfout [rad/s] → gewenste koppelstroom [A]
+//
+// De uitgang van deze PID is nu een stroomcommando (iqTarget) in Ampère,
+// niet meer een spanning. De Motor-klasse regelt de stroom intern via FOC.
+//
+// Afsteltip: begin met kleine Kp (bijv. 0.1) en controleer via de seriële
+// monitor of de snelheid stabiel op 0 blijft. Verhoog Ki om wegdrijven te
+// corrigeren. De limieten bepalen de maximale koppelstroom — pas aan als
+// de motor niet genoeg kracht levert of juist te agressief reageert.
 PID velocityPID(
-  /*Kp*/  0.5f,    // [V per rad/s]
-  /*Ki*/  0.2f,    // integrator corrigeert slippen en lading
-  /*Kd*/  0.0f,    // afgeleide van snelheid is te ruis-gevoelig
-  /*min*/ -10.0f,  // [V] = VOLTAGE_LIMIT
-  /*max*/  10.0f
+  /*Kp*/  0.1f,   // [A per rad/s]  conservatief beginpunt
+  /*Ki*/  0.05f,  // [A per rad]    integrator voor statische snelheidsfout
+  /*Kd*/  0.0f,   // afgeleide van snelheid is te ruis-gevoelig
+  /*min*/ -3.0f,  // [A] max koppelstroom achteruit
+  /*max*/  3.0f   // [A] max koppelstroom vooruit
 );
 
 // ─── Gedeelde toestand & mutex ────────────────────────────────────────────────
@@ -215,8 +222,9 @@ void slowTask(void *pvParameters) {
     }
 
     // ── Seriële debug-output ──────────────────────────────────────────────────
+    // pidOut is nu in Ampère (iqTarget), niet meer in Volt
     Serial.printf(
-      "[slow] tilt=%6.2f°  vel=%6.2f→%5.2f rad/s  out=%6.3fV  I1=%5.2fA  I2=%5.2fA  M1=%s  M2=%s\n",
+      "[slow] tilt=%6.2f°  vel=%6.2f→%5.2f rad/s  iq=%6.3fA  I1=%5.2fA  I2=%5.2fA  M1=%s  M2=%s\n",
       tilt, vel, velTgt, pidOut, cur1, cur2,
       ok1 ? "OK" : "FOUT",
       ok2 ? "OK" : "FOUT"
