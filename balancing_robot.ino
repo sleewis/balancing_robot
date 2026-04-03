@@ -289,9 +289,9 @@ void setup() {
   xSharedMutex = xSemaphoreCreateMutex();
 
   // Fast task: Core 0, hogere prioriteit zodat de motorloop nooit blokkeert
-  xTaskCreatePinnedToCore(fastTask, "FastTask", 4096, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(fastTask, "FastTask", 4096, NULL, 2, NULL, 1);
   // Slow task: Core 1, lagere prioriteit
-  xTaskCreatePinnedToCore(slowTask, "SlowTask", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(slowTask, "SlowTask", 4096, NULL, 1, NULL, 0);
 }
 
 
