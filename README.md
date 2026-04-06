@@ -10,7 +10,7 @@ Doelen van het project:
 - Twee BLDC-motoren aansturen met FOC (Field-Oriented Control)
 - Een IMU gebruiken voor kantelmeting
 - Live PID-tuning mogelijk maken tijdens het testen
-- Rijden op ±2 m/s via Bluetooth XBOX-controller (gepland)
+- Rijden en sturen via Bluetooth Xbox-controller
 
 De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en regelalgoritmen onafhankelijk van elkaar verbeterd kunnen worden.
 
@@ -20,16 +20,16 @@ De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en re
 
 De ESP32 draait twee FreeRTOS-tasks:
 
-## Fast Task (Core 1 – 500 Hz)
+## Fast Task (Core 1 – 1000 Hz)
 Verantwoordelijk voor real-time regeling.
 
 Uitvoeringsvolgorde per cyclus:
 
-1. Lees target tilt uit shared state
-2. Update IMU (100 Hz, gedecimeerd vanuit de loop)
-3. Voer balanceer-PID uit
+1. Lees targetTilt en targetYaw uit shared state
+2. Update IMU (100 Hz, gedecimeerd ÷10)
+3. Voer cascade PID uit: tilt → velocity → iqTarget
 4. Veiligheidscontrole (tilt-limiet en IMU-status)
-5. Stuur motoren aan — motor.loop() voert volledige FOC-keten uit
+5. Stuur motoren aan met yaw-offset voor differentieel sturen
 6. Schrijf telemetrie terug naar shared state
 7. Wacht op volgende control tick
 
@@ -40,7 +40,7 @@ Behandelt niet-kritische taken:
 
 - Seriële debugging en telemetrie-uitvoer
 - Live PID-tuning via seriële monitor
-- Controller-invoer (toekomstig)
+- Xbox BLE controller uitlezen en omzetten naar rijcommando's
 
 Communicatie tussen de tasks verloopt via een mutex-beschermde shared structure.
 
@@ -157,7 +157,8 @@ Centrale structure voor gegevensuitwisseling tussen de twee cores via een mutex.
 
 | Veld           | Richting       | Omschrijving                              |
 |----------------|----------------|-------------------------------------------|
-| `targetTilt`   | slow → fast    | Gewenste kanteling [°]                    |
+| `targetTilt`   | slow → fast    | Gewenste kanteling [°] — voor/achter rijden |
+| `targetYaw`    | slow → fast    | Draai-offset [A] — links/rechts sturen    |
 | `currentTilt`  | fast → slow    | Gemeten kanteling [°]                     |
 | `pidOutput`    | fast → slow    | Laatste velocity PID-uitgang [A] (iqTarget) |
 | `avgCurrent1`  | fast → slow    | Gefilterde stroom motor 1 [A]             |
@@ -175,7 +176,7 @@ De robot gebruikt een **cascade regelaar** met drie geneste lussen:
 Tilt PID → gewenste wielsnelheid [rad/s] → Velocity PID → iqTarget [A] → FOC → PWM
 ```
 
-**Buitenste lus — Tilt PID (500 Hz):**
+**Buitenste lus — Tilt PID (1000 Hz):**
 
 ```
 fout    = gemeten kanteling [°] − gewenste kanteling [°]
@@ -184,7 +185,7 @@ uitgang = gewenste wielsnelheid [rad/s]  (begrensd op ±50 rad/s ≈ ±2 m/s)
 
 Bij een positieve kanteling (voorover) stuurt de tilt PID een positieve doelsnelheid. De wielen rijden vooruit en lopen zo de massa achterop — de robot trekt zichzelf rechtop.
 
-**Middelste lus — Velocity PID (500 Hz):**
+**Middelste lus — Velocity PID (1000 Hz):**
 
 ```
 fout    = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
@@ -193,7 +194,18 @@ uitgang = gewenste koppelstroom iqTarget [A]
 
 De gemeten snelheid is het gemiddelde van beide motoren, gecorrigeerd voor de gespiegelde montage van motor 2.
 
-**Binnenste lus — FOC stroomregelaar (500 Hz, intern in Motor.loop):**
+**Differentieel sturen — Yaw offset:**
+
+De `targetYaw`-waarde (afkomstig van de Xbox rechter stick X) wordt als stroom-offset opgeteld bij motor 1 en bij motor 2:
+
+```
+motor1 ← iqTarget + targetYaw
+motor2 ← −iqTarget + targetYaw
+```
+
+Doordat motor 2 gespiegeld gemonteerd is, zorgt dezelfde offset op beide motoren voor een netto draaimoment: de ene motor versnelt, de andere vertraagt.
+
+**Binnenste lus — FOC stroomregelaar (1000 Hz, intern in Motor.loop):**
 
 ```
 Ia, Ib meten  →  Ic = −Ia − Ib  (Kirchhoff)
@@ -276,6 +288,55 @@ Aanbevolen volgorde:
 
 ---
 
+# Xbox Controller
+
+## Library
+
+**BLE-Gamepad-Client** van tbekas — installeer via de Arduino Library Manager.
+
+Ondersteunde controllers: Xbox One Wireless (model 1697/1708) en Xbox Series S/X (model 1914+), firmware 5.x of hoger.
+
+## Koppelen
+
+1. Zet de controller aan met de Xbox-knop.
+2. Houd de kleine koppelknop (bovenzijde) ingedrukt tot de Xbox-LED snel begint te knipperen (~3 seconden).
+3. De ESP32 verbindt automatisch.
+
+## Bediening
+
+| Stick            | Functie                          |
+|------------------|----------------------------------|
+| Linker stick Y   | Voor/achter rijden (targetTilt)  |
+| Rechter stick X  | Links/rechts draaien (targetYaw) |
+
+## Afstellen
+
+Drie constanten in `balancing_robot.ino` bepalen het rijgedrag:
+
+**`MAX_DRIVE_TILT_DEG` (standaard: 8.0°)**
+Maximale kantelhoek bij volledige stick-uitslag vooruit of achteruit. Een hogere waarde geeft meer rijsnelheid maar minder stabiliteitsreserve. Begin conservatief (5–8°) en verhoog voorzichtig.
+
+**`MAX_YAW_CURRENT_A` (standaard: 1.5 A)**
+Maximale stroom-offset voor het draaien. Dit is een additionele stroom die op de rijstroom wordt opgeteld. Te hoog instellen kan de robot doen wankelen tijdens het rijden. Verlaag naar 0.8–1.0 A als de robot instabiel wordt bij sturen.
+
+**`STICK_DEADZONE` (standaard: 0.08)**
+Stick-waarden kleiner dan deze drempelwaarde worden als nul behandeld. Dit voorkomt dat de robot reageert op drift van de analoge sticks. Vergroot tot ~0.15 als de robot langzaam wegrijdt terwijl de stick losgelaten is.
+
+## Draairichting omkeren
+
+Als de robot de verkeerde kant op draait bij rechter stick X naar rechts:
+
+```cpp
+// In slowTask, verander:
+float stickX = (fabsf(ctrl.rightStickX) > STICK_DEADZONE) ? ctrl.rightStickX : 0.0f;
+// Naar:
+float stickX = (fabsf(ctrl.rightStickX) > STICK_DEADZONE) ? -ctrl.rightStickX : 0.0f;
+```
+
+Hetzelfde geldt voor de rijrichting (linker stick Y): vervang `ctrl.leftStickY` door `-ctrl.leftStickY`.
+
+---
+
 # Toekomstige verbeteringen
 
 ## Sensorverbeteringen
@@ -290,10 +351,9 @@ De Adafruit INA228 is aangesloten maar nog niet in de code opgenomen. Toekomstig
 
 # Geplande functies
 
-- Bluetooth controller-invoer (XBOX)
-- Stuurregeling
 - Telemetrie streaming
 - Autonome stabilisatiemodi
+- Batterijbewaking via INA228
 
 ---
 
@@ -302,10 +362,11 @@ De Adafruit INA228 is aangesloten maar nog niet in de code opgenomen. Toekomstig
 Actief in ontwikkeling.
 
 Geïmplementeerd:
-- Dual-core FreeRTOS architectuur (500 Hz fast task, 50 Hz slow task)
+- Dual-core FreeRTOS architectuur (1000 Hz fast task, 50 Hz slow task)
 - Cascade regelaar: tilt PID → velocity PID → FOC stroomregelaar
 - Gesloten-lus FOC met Clarke/Park-transforms en dq-PI-regelaars
 - Encoder-foutafhandeling en overstroom-beveiliging
 - Live PID-tuning via seriële monitor
+- Xbox BLE controller: voor/achter rijden en differentieel sturen
 
 Huidige focus: afstellen van FOC-gains en PID-cascade voor stabiel balanceren.
