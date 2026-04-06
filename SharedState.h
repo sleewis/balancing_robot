@@ -21,8 +21,9 @@ struct SharedState {
   // Slow core past dit aan op basis van XBOX-joystick (voor/achter rijden)
   float targetTilt;
 
-  // Toekomstige uitbreidingen:
-  // float targetYaw;     // [°/s] draaisnelheid (XBOX rechter joystick)
+  // Gewenste draaisnelheid [A offset] — rechter stick X
+  // Positief = draai rechts, negatief = draai links
+  float targetYaw;
 
   // ── Telemetrie van fast → slow (alleen-lezen voor slow core) ─────────────
 

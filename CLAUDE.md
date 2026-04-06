@@ -97,7 +97,16 @@ Example: `p3.5` sets tilt Kp to 3.5.
 - `MAX_CURRENT_A 6.0f` — overcurrent threshold (sum of |Ia|+|Ib|+|Ic|)
 - `FOC_KP 0.5f`, `FOC_KI 50.0f` — inner current-loop PI gains
 
+## Xbox BLE Controller
+
+Library: **BLE-Gamepad-Client** (install via Arduino Library Manager).
+
+- `xbox.begin()` wordt aangeroepen in `setup()`
+- `slowTask` leest de controller elke 20 ms via `xbox.read(&ctrl)`
+- Linker stick Y → `gShared.targetTilt` (bereik ±`MAX_DRIVE_TILT_DEG` = 8°)
+- Deadzone: `STICK_DEADZONE 0.08f` — stick-waarden kleiner dan dit worden als 0 behandeld
+- Koppelen: houd de Xbox-knop 3 seconden ingedrukt tot de LED knippert
+
 ## Pending / TODOs
 
-- Bluetooth XBOX controller input in `slowTask` (stubs present as `TODO` comments)
-- `targetYaw` for differential steering (stub in `SharedState`)
+- `targetYaw` voor differentieel sturen (rechter stick X → links/rechts rijden, stub in `SharedState`)

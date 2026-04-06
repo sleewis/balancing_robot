@@ -7,10 +7,21 @@
 //  en alle andere code in dit project.
 // ═════════════════════════════════════════════════════════════════════════════
 
+
 #include "Motor.h"
 #include "IMU.h"
 #include "PID.h"
 #include "SharedState.h"
+#include <BLEGamepadClient.h>
+
+// ─── Xbox BLE controller ──────────────────────────────────────────────────────
+// Linker stick Y → targetTilt: volledig naar voren = +MAX_DRIVE_TILT_DEG
+// Deadzone voorkomt drift bij losgelaten stick.
+#define MAX_DRIVE_TILT_DEG  8.0f   // [°] maximale kantelhoek bij volle uitslag
+#define MAX_YAW_CURRENT_A   1.5f   // [A] maximale stroom-offset voor draaien
+#define STICK_DEADZONE      0.08f  // [-] stick-waarden binnen dit bereik = 0
+
+XboxController xbox;
 
 // ─── Veiligheidsdrempel ───────────────────────────────────────────────────────
 // Als de kanteling groter is dan deze hoek, worden beide PIDs gereset en
@@ -86,6 +97,7 @@ PID velocityPID(
 SemaphoreHandle_t xSharedMutex;
 SharedState gShared = {
   .targetTilt      = 0.0f,
+  .targetYaw       = 0.0f,
   .currentTilt     = 0.0f,
   .currentAngle1   = 0.0f,
   .currentAngle2   = 0.0f,
@@ -131,12 +143,14 @@ void fastTask(void *pvParameters) {
 
   const float DT       = 0.001f;   // [s] tijdstap
   float targetTilt     = 0.0f;     // lokale kopie van gShared.targetTilt
+  float targetYaw      = 0.0f;     // lokale kopie van gShared.targetYaw
   uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷10 = 100 Hz)
 
   while (true) {
     // ── 1) Lees target van slow core ─────────────────────────────────────────
     if (xSemaphoreTake(xSharedMutex, 0) == pdTRUE) {
       targetTilt = gShared.targetTilt;
+      targetYaw  = gShared.targetYaw;
       xSemaphoreGive(xSharedMutex);
     }
 
@@ -168,9 +182,11 @@ void fastTask(void *pvParameters) {
     float voltage     = velocityPID.update(velError, DT);
 
     // ── 6) Motoraansturing ────────────────────────────────────────────────────
+    // targetYaw voegt een stroom-offset toe: motor 1 krijgt meer/minder dan motor 2
+    // zodat de robot ter plaatse draait of in een boog rijdt.
     // Motor.loop() stopt automatisch bij encoder-fout of overstroom.
-    motor1.loop( voltage);
-    motor2.loop(-voltage);
+    motor1.loop( voltage + targetYaw);
+    motor2.loop(-voltage + targetYaw);
 
     // ── 7) Telemetrie → slow core (non-blocking) ──────────────────────────────
     if (xSemaphoreTake(xSharedMutex, 0) == pdTRUE) {
@@ -261,8 +277,27 @@ void slowTask(void *pvParameters) {
       }
     }
 
-    // TODO: lees XBOX-controller via Bluetooth
-    // TODO: gShared.targetTilt = joystickY * MAX_TILT_DEG;
+    // ── Xbox BLE controller ───────────────────────────────────────────────────
+    if (xbox.isConnected()) {
+      XboxControlsState ctrl;
+      xbox.read(&ctrl);
+
+      // Deadzone toepassen
+      float stickY = (fabsf(ctrl.leftStickY) > STICK_DEADZONE) ? ctrl.leftStickY : 0.0f;
+
+      // Linker stick Y → gewenste kantelhoek (voor/achter rijden)
+      float newTargetTilt = stickY * MAX_DRIVE_TILT_DEG;
+
+      // Rechter stick X → draaien (differentiële stroomoffset)
+      float stickX = (fabsf(ctrl.rightStickX) > STICK_DEADZONE) ? ctrl.rightStickX : 0.0f;
+      float newTargetYaw = stickX * MAX_YAW_CURRENT_A;
+
+      if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
+        gShared.targetTilt = newTargetTilt;
+        gShared.targetYaw  = newTargetYaw;
+        xSemaphoreGive(xSharedMutex);
+      }
+    }
 
     vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
   }
@@ -285,6 +320,10 @@ void setup() {
   } else {
     Serial.println("[OK] BNO055 gevonden.");
   }
+
+  // Xbox BLE controller initialiseren
+  xbox.begin();
+  Serial.println("[OK] Xbox BLE gestart — zet controller in koppelmodus (Xbox-knop 3s).");
 
   xSharedMutex = xSemaphoreCreateMutex();
 
