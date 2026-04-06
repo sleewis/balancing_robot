@@ -20,7 +20,7 @@ De architectuur is bewust modulair opgezet zodat sensoren, motoraansturing en re
 
 De ESP32 draait twee FreeRTOS-tasks:
 
-## Fast Task (Core 1 – 1000 Hz)
+## Fast Task (Core 1 – 500 Hz)
 Verantwoordelijk voor real-time regeling.
 
 Uitvoeringsvolgorde per cyclus:
@@ -176,7 +176,7 @@ De robot gebruikt een **cascade regelaar** met drie geneste lussen:
 Tilt PID → gewenste wielsnelheid [rad/s] → Velocity PID → iqTarget [A] → FOC → PWM
 ```
 
-**Buitenste lus — Tilt PID (1000 Hz):**
+**Buitenste lus — Tilt PID (500 Hz):**
 
 ```
 fout    = gemeten kanteling [°] − gewenste kanteling [°]
@@ -185,7 +185,7 @@ uitgang = gewenste wielsnelheid [rad/s]  (begrensd op ±50 rad/s ≈ ±2 m/s)
 
 Bij een positieve kanteling (voorover) stuurt de tilt PID een positieve doelsnelheid. De wielen rijden vooruit en lopen zo de massa achterop — de robot trekt zichzelf rechtop.
 
-**Middelste lus — Velocity PID (1000 Hz):**
+**Middelste lus — Velocity PID (500 Hz):**
 
 ```
 fout    = gewenste snelheid [rad/s] − gemeten snelheid [rad/s]
@@ -205,7 +205,7 @@ motor2 ← −iqTarget + targetYaw
 
 Doordat motor 2 gespiegeld gemonteerd is, zorgt dezelfde offset op beide motoren voor een netto draaimoment: de ene motor versnelt, de andere vertraagt.
 
-**Binnenste lus — FOC stroomregelaar (1000 Hz, intern in Motor.loop):**
+**Binnenste lus — FOC stroomregelaar (500 Hz, intern in Motor.loop):**
 
 ```
 Ia, Ib meten  →  Ic = −Ia − Ib  (Kirchhoff)
@@ -362,7 +362,7 @@ De Adafruit INA228 is aangesloten maar nog niet in de code opgenomen. Toekomstig
 Actief in ontwikkeling.
 
 Geïmplementeerd:
-- Dual-core FreeRTOS architectuur (1000 Hz fast task, 50 Hz slow task)
+- Dual-core FreeRTOS architectuur (500 Hz fast task, 50 Hz slow task)
 - Cascade regelaar: tilt PID → velocity PID → FOC stroomregelaar
 - Gesloten-lus FOC met Clarke/Park-transforms en dq-PI-regelaars
 - Encoder-foutafhandeling en overstroom-beveiliging

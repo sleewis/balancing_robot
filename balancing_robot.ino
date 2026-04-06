@@ -12,7 +12,7 @@
 #include "IMU.h"
 #include "PID.h"
 #include "SharedState.h"
-#include <BLEGamepadClient.h>
+//#include <BLEGamepadClient.h>
 
 // ─── ESP32-S3-VROOM uses Serial0 ──────────────────────────────────────────────
 //
@@ -27,7 +27,7 @@
 #define MAX_YAW_CURRENT_A   1.5f   // [A] maximale stroom-offset voor draaien
 #define STICK_DEADZONE      0.08f  // [-] stick-waarden binnen dit bereik = 0
 
-XboxController xbox;
+//XboxController xbox;
 
 // ─── Veiligheidsdrempel ───────────────────────────────────────────────────────
 // Als de kanteling groter is dan deze hoek, worden beide PIDs gereset en
@@ -145,12 +145,12 @@ void fastTask(void *pvParameters) {
   motor2.alignFinish();
 
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xPeriod = pdMS_TO_TICKS(1);  // 1 ms = 1000 Hz
+  const TickType_t xPeriod = pdMS_TO_TICKS(2);  // 2 ms = 500 Hz
 
-  const float DT       = 0.001f;   // [s] tijdstap
+  const float DT       = 0.002f;   // [s] tijdstap
   float targetTilt     = 0.0f;     // lokale kopie van gShared.targetTilt
   float targetYaw      = 0.0f;     // lokale kopie van gShared.targetYaw
-  uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷10 = 100 Hz)
+  uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷5 = 100 Hz)
 
   while (true) {
     // ── 1) Lees target van slow core ─────────────────────────────────────────
@@ -160,8 +160,8 @@ void fastTask(void *pvParameters) {
       xSemaphoreGive(xSharedMutex);
     }
 
-    // ── 2) Lees IMU elke 10e cyclus (100 Hz) ─────────────────────────────────
-    if (++imuDiv >= 10) {
+    // ── 2) Lees IMU elke 5e cyclus (100 Hz) ──────────────────────────────────
+    if (++imuDiv >= 5) {
       imuDiv = 0;
       imu.update();
     }
@@ -284,26 +284,26 @@ void slowTask(void *pvParameters) {
     }
 
     // ── Xbox BLE controller ───────────────────────────────────────────────────
-    if (xbox.isConnected()) {
-      XboxControlsState ctrl;
-      xbox.read(&ctrl);
+    //if (xbox.isConnected()) {  
+    //  XboxControlsState ctrl;
+    //  xbox.read(&ctrl);
 
       // Deadzone toepassen
-      float stickY = (fabsf(ctrl.leftStickY) > STICK_DEADZONE) ? ctrl.leftStickY : 0.0f;
+    //  float stickY = (fabsf(ctrl.leftStickY) > STICK_DEADZONE) ? ctrl.leftStickY : 0.0f;
 
       // Linker stick Y → gewenste kantelhoek (voor/achter rijden)
-      float newTargetTilt = stickY * MAX_DRIVE_TILT_DEG;
+    //  float newTargetTilt = stickY * MAX_DRIVE_TILT_DEG;
 
       // Rechter stick X → draaien (differentiële stroomoffset)
-      float stickX = (fabsf(ctrl.rightStickX) > STICK_DEADZONE) ? ctrl.rightStickX : 0.0f;
-      float newTargetYaw = stickX * MAX_YAW_CURRENT_A;
+    //  float stickX = (fabsf(ctrl.rightStickX) > STICK_DEADZONE) ? ctrl.rightStickX : 0.0f;
+    //  float newTargetYaw = stickX * MAX_YAW_CURRENT_A;
 
-      if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
-        gShared.targetTilt = newTargetTilt;
-        gShared.targetYaw  = newTargetYaw;
-        xSemaphoreGive(xSharedMutex);
-      }
-    }
+    //  if (xSemaphoreTake(xSharedMutex, portMAX_DELAY) == pdTRUE) {
+    //    gShared.targetTilt = newTargetTilt;
+    //    gShared.targetYaw  = newTargetYaw;
+    //    xSemaphoreGive(xSharedMutex);
+    //  }
+    //}
 
     vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
   }
@@ -329,15 +329,15 @@ void setup() {
   }
 
   // Xbox BLE controller initialiseren
-  xbox.begin();
-  Serial.println("[OK] Xbox BLE gestart — zet controller in koppelmodus (Xbox-knop 3s).");
+  //xbox.begin();
+  //Serial.println("[OK] Xbox BLE gestart — zet controller in koppelmodus (Xbox-knop 3s).");
 
   xSharedMutex = xSemaphoreCreateMutex();
 
   // Fast task: Core 0, hogere prioriteit zodat de motorloop nooit blokkeert
-  xTaskCreatePinnedToCore(fastTask, "FastTask", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(fastTask, "FastTask", 8192, NULL, 2, NULL, 1);
   // Slow task: Core 1, lagere prioriteit
-  xTaskCreatePinnedToCore(slowTask, "SlowTask", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(slowTask, "SlowTask", 8192, NULL, 1, NULL, 0);
 }
 
 

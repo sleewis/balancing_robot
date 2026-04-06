@@ -39,7 +39,7 @@ The firmware runs two FreeRTOS tasks pinned to separate cores:
 
 | Task | Core | Rate | Responsibility |
 |------|------|------|----------------|
-| `fastTask` | 1 | 1000 Hz (1 ms) | Motor FOC loop, cascade PID, IMU read (÷10 = 100 Hz) |
+| `fastTask` | 1 | 500 Hz (2 ms) | Motor FOC loop, cascade PID, IMU read (÷5 = 100 Hz) |
 | `slowTask` | 0 | 50 Hz (20 ms) | Serial telemetry output, live PID tuning, (future) Bluetooth |
 
 Tasks share state via `gShared` (`SharedState` struct) guarded by `xSharedMutex`. The fast task always takes the mutex non-blocking (timeout 0) — it never waits, to avoid jitter in the motor loop.
