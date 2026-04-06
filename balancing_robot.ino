@@ -14,6 +14,12 @@
 #include "SharedState.h"
 #include <BLEGamepadClient.h>
 
+// ─── ESP32-S3-VROOM uses Serial0 ──────────────────────────────────────────────
+//
+#define Serial Serial0
+//
+// ──────────────────────────────────────────────────────────────────────────────v
+
 // ─── Xbox BLE controller ──────────────────────────────────────────────────────
 // Linker stick Y → targetTilt: volledig naar voren = +MAX_DRIVE_TILT_DEG
 // Deadzone voorkomt drift bij losgelaten stick.
@@ -309,6 +315,7 @@ void slowTask(void *pvParameters) {
 // ═════════════════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
+  while (!Serial) { delay(10); } // wacht op USB verbinding
 
   // I2C initialiseren vóór de tasks starten
   I2C_1.begin(19, 18, 400000);  // motor 1 encoder + BNO055
