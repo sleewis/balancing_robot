@@ -104,13 +104,13 @@ SharedState gShared = {
 //
 //  Volgorde per cyclus:
 //    1. Lees targetTilt van slow core (non-blocking mutex)
-//    2. Lees IMU elke 5 cycli → 100 Hz
+//    2. Lees IMU elke 10 cycli → 100 Hz
 //    3. Buitenste lus: tilt PID → gewenste snelheid
 //    4. Veiligheidscheck: reset & stop bij te grote kanteling
 //    5. Binnenste lus: velocity PID → motorspanning
 //    6. Stuur motoren aan
 //    7. Schrijf telemetrie terug naar gShared
-//    8. Wacht op volgend 2ms-slot
+//    8. Wacht op volgend 1ms-slot
 // ═════════════════════════════════════════════════════════════════════════════
 void fastTask(void *pvParameters) {
   // ── Hardware initialisatie ────────────────────────────────────────────────
@@ -127,11 +127,11 @@ void fastTask(void *pvParameters) {
   motor2.alignFinish();
 
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xPeriod = pdMS_TO_TICKS(2);  // 2 ms = 500 Hz
+  const TickType_t xPeriod = pdMS_TO_TICKS(1);  // 1 ms = 1000 Hz
 
-  const float DT       = 0.002f;   // [s] tijdstap
+  const float DT       = 0.001f;   // [s] tijdstap
   float targetTilt     = 0.0f;     // lokale kopie van gShared.targetTilt
-  uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷5 = 100 Hz)
+  uint8_t imuDiv       = 0;        // teller voor IMU-decimering (÷10 = 100 Hz)
 
   while (true) {
     // ── 1) Lees target van slow core ─────────────────────────────────────────
@@ -140,8 +140,8 @@ void fastTask(void *pvParameters) {
       xSemaphoreGive(xSharedMutex);
     }
 
-    // ── 2) Lees IMU elke 5e cyclus (100 Hz) ──────────────────────────────────
-    if (++imuDiv >= 5) {
+    // ── 2) Lees IMU elke 10e cyclus (100 Hz) ─────────────────────────────────
+    if (++imuDiv >= 10) {
       imuDiv = 0;
       imu.update();
     }

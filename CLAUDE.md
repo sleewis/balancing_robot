@@ -24,14 +24,23 @@ The MKS-ESP32FOC V2.0 is not a named board in arduino-cli; use the generic `esp3
   - `I2C_1` (Wire0, GPIO 19/18): motor 1 encoder + BNO055
   - `I2C_2` (Wire1, GPIO 23/5): motor 2 encoder
 
+### Motor GPIO pins
+
+| | U (PWM) | V (PWM) | W (PWM) | EN | IA (ADC) | IB (ADC) |
+|---|---|---|---|---|---|---|
+| motor1 | 33 | 32 | 25 | 12 | 39 | 36 |
+| motor2 | 26 | 27 | 14 | 12 | 34 | 35 |
+
+Motor 2 is mounted mirrored; its velocity and drive voltage sign are inverted in firmware (`motor2.loop(-voltage)`).
+
 ## Architecture
 
 The firmware runs two FreeRTOS tasks pinned to separate cores:
 
 | Task | Core | Rate | Responsibility |
 |------|------|------|----------------|
-| `fastTask` | 0 | 500 Hz (2 ms) | Motor FOC loop, cascade PID, IMU read (÷5 = 100 Hz) |
-| `slowTask` | 1 | 50 Hz (20 ms) | Serial telemetry output, live PID tuning, (future) Bluetooth |
+| `fastTask` | 1 | 1000 Hz (1 ms) | Motor FOC loop, cascade PID, IMU read (÷10 = 100 Hz) |
+| `slowTask` | 0 | 50 Hz (20 ms) | Serial telemetry output, live PID tuning, (future) Bluetooth |
 
 Tasks share state via `gShared` (`SharedState` struct) guarded by `xSharedMutex`. The fast task always takes the mutex non-blocking (timeout 0) — it never waits, to avoid jitter in the motor loop.
 

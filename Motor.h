@@ -27,7 +27,7 @@
 
 // ─── Snelheidsberekening ──────────────────────────────────────────────────────
 // Verwachte aanroepfrequentie van loop() — gebruikt voor hoeksnelheid [rad/s].
-#define MOTOR_DT        0.002f   // [s]  1 / 500 Hz
+#define MOTOR_DT        0.001f   // [s]  1 / 1000 Hz
 
 // Low-pass filter coëfficiënt voor de snelheidsmeting (0 = geen filter, 1 = bevroren)
 // Hogere waarde → soepeler maar trage respons; lagere waarde → sneller maar meer ruis.
